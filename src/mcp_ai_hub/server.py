@@ -164,7 +164,7 @@ def create_mcp_server(host: str = "127.0.0.1", port: int = 8000) -> FastMCP:
         """Chat with specified AI model using OpenAI-compatible messages format.
 
         Args:
-            model: Model name from configuration (e.g., 'gpt-4', 'claude-sonnet-4')
+            model: Model name from configuration. Call list_models() tool to see available models.
             messages: List of messages in OpenAI format. Each message should have 'role' and 'content' keys.
                      Content can be:
                      - String for text messages

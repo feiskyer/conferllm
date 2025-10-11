@@ -27,7 +27,7 @@ class AIClient:
         """Chat with specified AI model.
 
         Args:
-            model_name: Name of the model to use
+            model_name: Name of the model to use. Call list_models() tool to see available models.
             messages: List of messages in OpenAI format. Each message should have 'role' and 'content' keys.
                      Content can be:
                      - String for text messages
