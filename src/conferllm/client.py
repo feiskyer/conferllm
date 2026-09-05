@@ -1,23 +1,61 @@
-"""LiteLM integration wrapper for AI providers."""
+"""LiteLLM integration for ConferLLM."""
 
-import base64
+import copy
 import logging
-import mimetypes
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
 import litellm
 from litellm.types.utils import ModelResponse
 
-from .config import AIHubConfig, ModelConfig
+from .config import ConferLLMConfig, ModelConfig
+from .errors import ConferLLMError
+from .images import image_bytes_to_data_url, image_payload_from_bytes
 
 logger = logging.getLogger(__name__)
 
 
-class AIClient:
+class ModelNotFoundError(ValueError):
+    """A caller selected an alias that is not configured."""
+
+    code = "model_not_found"
+
+
+class ModelCapabilityError(ValueError):
+    """Raised when a request contradicts declared model capabilities."""
+
+    code = "model_capability_mismatch"
+
+    def __init__(self, message: str, details: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.details = details
+
+
+class ImageLimitError(ValueError):
+    """Raised when a request exceeds an effective model image limit."""
+
+    code = "image_limit_exceeded"
+
+    def __init__(self, message: str, details: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.details = details
+
+
+@dataclass(frozen=True)
+class EffectiveImageLimits:
+    """Resolved image limits for one configured model."""
+
+    max_count: int
+    max_bytes_per_image: int
+    max_total_bytes: int
+    capabilities_declared: bool
+
+
+class LLMClient:
     """Wrapper around LiteLM for unified AI provider access."""
 
-    def __init__(self, config: AIHubConfig):
+    def __init__(self, config: ConferLLMConfig):
         """Initialize AI client with configuration."""
         self.config = config
         # Set LiteLM to suppress output
@@ -56,13 +94,7 @@ class AIClient:
             ValueError: If model is not configured or messages format is invalid
             Exception: If API call fails
         """
-        model_config = self.config.get_model_config(model_name)
-        if not model_config:
-            available_models = self.config.list_available_models()
-            raise ValueError(
-                f"Model '{model_name}' not found in configuration. "
-                f"Available models: {', '.join(available_models)}"
-            )
+        model_config = self.require_model_config(model_name)
 
         # Validate messages format
         if not isinstance(messages, list):
@@ -104,11 +136,17 @@ class AIClient:
             # Cast to ModelResponse since LiteLLM can return a union type but we disable streaming
             return cast(ModelResponse, response)
 
-        except Exception as e:
-            logger.error("Error calling model %s: %s", model_name, e)
-            raise RuntimeError(
-                f"Failed to get response from {model_name}: {str(e)}"
-            ) from e
+        except Exception as error:
+            # Provider errors may contain request bodies, credentials, or signed
+            # URLs. Preserve the failure category, never the provider's text.
+            error_type = type(error).__name__
+            logger.error("Error calling model %s (%s)", model_name, error_type)
+            raise ConferLLMError(
+                "provider_error",
+                f"Failed to get response from {model_name}. "
+                "Check provider availability, credentials, and model parameters.",
+                details={"exception_type": error_type},
+            ) from None
 
     def _is_local_path(self, url: str) -> bool:
         """Check if a URL is a local file path.
@@ -128,50 +166,30 @@ class AIClient:
         # Windows: starts with drive letter (C:, D:, etc.)
         return url.startswith("/") or (len(url) > 1 and url[1] == ":")
 
-    def _read_and_encode_image(self, file_path: str) -> str | None:
+    def _read_and_encode_image(self, file_path: str) -> str:
         """Read a local image file and convert it to base64 data URL.
 
         Args:
             file_path: Path to the local image file
 
         Returns:
-            Base64 data URL string, or None if file cannot be read
+            Base64 data URL string.
         """
         try:
-            # Check if file exists
             path = Path(file_path)
-            if not path.exists():
-                logger.warning(f"Image file not found: {file_path}")
-                return None
-
-            # Determine MIME type
-            mime_type, _ = mimetypes.guess_type(file_path)
-            if mime_type is None:
-                # Default to common image types based on extension
-                ext = path.suffix.lower()
-                mime_types_map = {
-                    ".jpg": "image/jpeg",
-                    ".jpeg": "image/jpeg",
-                    ".png": "image/png",
-                    ".gif": "image/gif",
-                    ".webp": "image/webp",
-                    ".bmp": "image/bmp",
-                }
-                mime_type = mime_types_map.get(ext, "image/jpeg")
-
-            # Read and encode the image
-            with open(file_path, "rb") as f:
-                image_data = f.read()
-                base64_str = base64.b64encode(image_data).decode("utf-8")
-
-            # Create data URL
-            data_url = f"data:{mime_type};base64,{base64_str}"
-            logger.info(f"Converted local image to base64: {file_path}")
+            image_data = path.read_bytes()
+            payload = image_payload_from_bytes(
+                image_data,
+                source_name=path.name,
+            )
+            data_url = image_bytes_to_data_url(payload.data, payload.mime_type)
+            logger.info("Converted local image to base64: %s", file_path)
             return data_url
-
-        except Exception as e:
-            logger.error(f"Failed to read and encode image {file_path}: {e}")
-            return None
+        except Exception as error:
+            logger.error("Failed to read and encode image %s: %s", file_path, error)
+            raise ValueError(
+                f"Failed to read local image '{file_path}': {error}"
+            ) from error
 
     def _process_content_item(self, item: Any) -> Any:
         """Process a single content item to convert local image paths.
@@ -193,16 +211,13 @@ class AIClient:
                 url = image_url_obj["url"]
 
                 # Check if it's a local path
-                if self._is_local_path(url):
+                if isinstance(url, str) and self._is_local_path(url):
                     # Convert to base64
                     base64_url = self._read_and_encode_image(url)
-                    if base64_url:
-                        # Create a new dict to avoid modifying the original
-                        import copy
-
-                        new_item = copy.deepcopy(item)
-                        new_item["image_url"]["url"] = base64_url
-                        return new_item
+                    # Create a new dict to avoid modifying the original
+                    new_item = copy.deepcopy(item)
+                    new_item["image_url"]["url"] = base64_url
+                    return new_item
 
         return item
 
@@ -217,8 +232,6 @@ class AIClient:
         Returns:
             New list of messages with local images converted to base64
         """
-        import copy
-
         processed_messages = []
 
         for message in messages:
@@ -270,16 +283,128 @@ class AIClient:
         """List all available models."""
         return self.config.list_available_models()
 
+    def require_model_config(self, model_name: str) -> ModelConfig:
+        """Return a configured model or raise a stable validation error."""
+        model_config = self.config.get_model_config(model_name)
+        if model_config is not None:
+            return model_config
+        available_models = self.config.list_available_models()
+        raise ModelNotFoundError(
+            f"Model '{model_name}' not found in configuration. "
+            f"Available models: {', '.join(available_models)}"
+        )
+
+    def validate_chat_request(
+        self,
+        model_name: str,
+        *,
+        image_count: int = 0,
+        history_image_count: int = 0,
+        require_text: bool = True,
+    ) -> tuple[EffectiveImageLimits, list[str]]:
+        """Validate declared modalities before any image source is read."""
+        model_config = self.require_model_config(model_name)
+        limits = self.config.image_limits
+        capabilities = model_config.capabilities
+        effective_max_count = limits.max_count
+        warnings: list[str] = []
+
+        if capabilities is not None:
+            if require_text and "text" not in capabilities.input_modalities:
+                raise ModelCapabilityError(
+                    f"Model '{model_name}' is not configured to accept text prompts.",
+                    {
+                        "model": model_name,
+                        "requested_modality": "text",
+                        "input_modalities": capabilities.input_modalities,
+                    },
+                )
+            if (
+                image_count or history_image_count
+            ) and "image" not in capabilities.input_modalities:
+                raise ModelCapabilityError(
+                    f"Model '{model_name}' is configured as text-only.",
+                    {
+                        "model": model_name,
+                        "requested_modality": "image",
+                        "input_modalities": capabilities.input_modalities,
+                    },
+                )
+            if capabilities.max_input_images is not None:
+                effective_max_count = min(
+                    effective_max_count,
+                    max(0, capabilities.max_input_images - history_image_count),
+                )
+                if history_image_count > capabilities.max_input_images:
+                    raise ImageLimitError(
+                        f"Stored history exceeds the image limit for model '{model_name}'. "
+                        "Start a new session or revise the declared model limit.",
+                        {
+                            "model": model_name,
+                            "history_count": history_image_count,
+                            "max_count": capabilities.max_input_images,
+                        },
+                    )
+        elif image_count or history_image_count:
+            warnings.append(
+                f"Model '{model_name}' has no declared image capabilities; "
+                "provider compatibility was not prevalidated."
+            )
+
+        if image_count > effective_max_count:
+            raise ImageLimitError(
+                (
+                    f"At most {effective_max_count} input images are allowed for "
+                    f"model '{model_name}'."
+                ),
+                {
+                    "model": model_name,
+                    "count": image_count,
+                    "history_count": history_image_count,
+                    "max_count": effective_max_count,
+                },
+            )
+
+        return (
+            EffectiveImageLimits(
+                max_count=effective_max_count,
+                max_bytes_per_image=limits.max_bytes_per_image,
+                max_total_bytes=limits.max_total_bytes,
+                capabilities_declared=capabilities is not None,
+            ),
+            warnings,
+        )
+
     def get_model_info(self, model_name: str) -> dict[str, Any]:
         """Get information about a specific model."""
-        model_config = self.config.get_model_config(model_name)
-        if not model_config:
-            raise ValueError(f"Model '{model_name}' not found in configuration.")
+        model_config = self.require_model_config(model_name)
+        limits, _ = self.validate_chat_request(model_name, require_text=False)
+        capabilities = model_config.capabilities
 
         return {
             "model_name": model_config.model_name,
             "provider_model": model_config.litellm_params.get("model"),
             "configured_params": list(model_config.litellm_params.keys()),
-            "system_prompt": model_config.system_prompt,
-            "global_system_prompt": self.config.global_system_prompt,
+            "has_model_system_prompt": model_config.system_prompt is not None,
+            "uses_global_system_prompt": (
+                model_config.system_prompt is None
+                and self.config.global_system_prompt is not None
+            ),
+            "capabilities": {
+                "declared": capabilities is not None,
+                "input_modalities": (
+                    capabilities.input_modalities if capabilities is not None else None
+                ),
+                "output_modalities": (
+                    capabilities.output_modalities if capabilities is not None else None
+                ),
+                "max_input_images": (
+                    capabilities.max_input_images if capabilities is not None else None
+                ),
+            },
+            "effective_image_limits": {
+                "max_count": limits.max_count,
+                "max_bytes_per_image": limits.max_bytes_per_image,
+                "max_total_bytes": limits.max_total_bytes,
+            },
         }

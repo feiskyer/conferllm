@@ -2,15 +2,32 @@
 
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
+import litellm
 import pytest
 import yaml
 
-from mcp_ai_hub.config import AIHubConfig, ModelConfig
+from conferllm.config import ConferLLMConfig, ModelConfig
 
 
-def create_test_config(models: list[dict[str, Any]]) -> AIHubConfig:
+@pytest.fixture(autouse=True)
+def isolate_user_data_and_providers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Never consult real user data or accidentally invoke a provider."""
+    isolated_home = tmp_path / "isolated-home"
+    isolated_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: isolated_home)
+
+    def unmocked_provider(*args: Any, **kwargs: Any) -> NoReturn:
+        raise AssertionError("Provider calls must be explicitly mocked in tests.")
+
+    monkeypatch.setattr(litellm, "completion", unmocked_provider)
+    monkeypatch.setattr(litellm, "acompletion", unmocked_provider)
+
+
+def create_test_config(models: list[dict[str, Any]]) -> ConferLLMConfig:
     """Create a test configuration with the specified models."""
     model_configs = []
     for model_data in models:
@@ -20,7 +37,7 @@ def create_test_config(models: list[dict[str, Any]]) -> AIHubConfig:
         )
         model_configs.append(model_config)
 
-    return AIHubConfig(model_list=model_configs)
+    return ConferLLMConfig(model_list=model_configs)
 
 
 def create_temp_config_file(config_data: dict[str, Any]) -> Path:
@@ -56,7 +73,7 @@ def sample_config_data() -> dict[str, Any]:
 
 
 @pytest.fixture
-def sample_config(sample_config_data: dict[str, Any]) -> AIHubConfig:
+def sample_config(sample_config_data: dict[str, Any]) -> ConferLLMConfig:
     """Sample configuration for testing."""
     return create_test_config(sample_config_data["model_list"])
 

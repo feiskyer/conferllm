@@ -4,16 +4,21 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mcp_ai_hub.ai_client import AIClient
-from mcp_ai_hub.config import AIHubConfig, ModelConfig
+from conferllm.client import ImageLimitError, LLMClient, ModelCapabilityError
+from conferllm.config import (
+    ConferLLMConfig,
+    ImageLimits,
+    ModelCapabilities,
+    ModelConfig,
+)
 
 
-class TestAIClient:
-    """Test AIClient class."""
+class TestLLMClient:
+    """Test LLMClient class."""
 
     def setup_method(self):
         """Set up test fixtures."""
-        self.config = AIHubConfig(
+        self.config = ConferLLMConfig(
             model_list=[
                 ModelConfig(
                     model_name="gpt-4",
@@ -33,10 +38,10 @@ class TestAIClient:
                 ),
             ]
         )
-        self.client = AIClient(self.config)
+        self.client = LLMClient(self.config)
 
     def test_init(self):
-        """Test AIClient initialization."""
+        """Test LLMClient initialization."""
         assert self.client.config == self.config
 
     def test_chat_with_string_input(self):
@@ -45,7 +50,7 @@ class TestAIClient:
         mock_response.choices = [MagicMock(message=MagicMock(content="Test response"))]
 
         with patch(
-            "mcp_ai_hub.ai_client.litellm.completion",
+            "conferllm.client.litellm.completion",
             return_value=mock_response,
         ) as mock_completion:
             messages = [{"role": "user", "content": "Hello, world!"}]
@@ -63,7 +68,7 @@ class TestAIClient:
 
     def test_chat_with_global_system_prompt(self):
         """Test chat with global system prompt."""
-        config = AIHubConfig(
+        config = ConferLLMConfig(
             global_system_prompt="Global system prompt",
             model_list=[
                 ModelConfig(
@@ -72,13 +77,13 @@ class TestAIClient:
                 )
             ],
         )
-        client = AIClient(config)
+        client = LLMClient(config)
 
         mock_response = MagicMock()
         mock_response.choices = [MagicMock(message=MagicMock(content="Test response"))]
 
         with patch(
-            "mcp_ai_hub.ai_client.litellm.completion",
+            "conferllm.client.litellm.completion",
             return_value=mock_response,
         ) as mock_completion:
             messages = [{"role": "user", "content": "Hello, world!"}]
@@ -97,7 +102,7 @@ class TestAIClient:
 
     def test_chat_with_model_specific_system_prompt(self):
         """Test chat with model-specific system prompt."""
-        config = AIHubConfig(
+        config = ConferLLMConfig(
             global_system_prompt="Global system prompt",
             model_list=[
                 ModelConfig(
@@ -107,13 +112,13 @@ class TestAIClient:
                 )
             ],
         )
-        client = AIClient(config)
+        client = LLMClient(config)
 
         mock_response = MagicMock()
         mock_response.choices = [MagicMock(message=MagicMock(content="Test response"))]
 
         with patch(
-            "mcp_ai_hub.ai_client.litellm.completion",
+            "conferllm.client.litellm.completion",
             return_value=mock_response,
         ) as mock_completion:
             messages = [{"role": "user", "content": "Hello, world!"}]
@@ -141,7 +146,7 @@ class TestAIClient:
         ]
 
         with patch(
-            "mcp_ai_hub.ai_client.litellm.completion",
+            "conferllm.client.litellm.completion",
             return_value=mock_response,
         ) as mock_completion:
             response = self.client.chat("gpt-4", messages)
@@ -164,25 +169,18 @@ class TestAIClient:
             self.client.chat("non-existing", [{"role": "user", "content": "Hello!"}])
 
     def test_chat_missing_model_parameter(self):
-        """Test chat with model config missing model parameter."""
-        config = AIHubConfig(
-            model_list=[
-                ModelConfig(
-                    model_name="bad-model",
-                    litellm_params={"api_key": "test-key"},  # Missing 'model' parameter
-                )
-            ]
-        )
-        client = AIClient(config)
-
-        with pytest.raises(RuntimeError, match="Failed to get response from bad-model"):
-            client.chat("bad-model", [{"role": "user", "content": "Hello!"}])
+        """Reject a missing provider model while validating configuration."""
+        with pytest.raises(ValueError, match="model must be a non-empty string"):
+            ModelConfig(
+                model_name="bad-model",
+                litellm_params={"api_key": "test-key"},
+            )
 
     def test_chat_api_error(self):
         """Test chat when API call fails."""
         with (
             patch(
-                "mcp_ai_hub.ai_client.litellm.completion",
+                "conferllm.client.litellm.completion",
                 side_effect=Exception("API Error"),
             ),
             pytest.raises(RuntimeError, match="Failed to get response from gpt-4"),
@@ -195,7 +193,7 @@ class TestAIClient:
         mock_response.choices = []  # Empty choices
 
         with patch(
-            "mcp_ai_hub.ai_client.litellm.completion",
+            "conferllm.client.litellm.completion",
             return_value=mock_response,
         ):
             response = self.client.chat(
@@ -211,7 +209,7 @@ class TestAIClient:
         ]
 
         with patch(
-            "mcp_ai_hub.ai_client.litellm.completion",
+            "conferllm.client.litellm.completion",
             return_value=mock_response,
         ):
             response = self.client.chat(
@@ -221,7 +219,7 @@ class TestAIClient:
 
     def test_prepare_messages_with_system_prompt(self):
         """Test preparing messages with system prompt."""
-        config = AIHubConfig(
+        config = ConferLLMConfig(
             global_system_prompt="Global system prompt",
             model_list=[
                 ModelConfig(
@@ -230,7 +228,7 @@ class TestAIClient:
                 )
             ],
         )
-        client = AIClient(config)
+        client = LLMClient(config)
         model_config = config.get_model_config("gpt-4")
         messages = [{"role": "user", "content": "Hello, world!"}]
 
@@ -242,7 +240,7 @@ class TestAIClient:
 
     def test_prepare_messages_model_specific_overrides_global(self):
         """Test that model-specific system prompt overrides global system prompt."""
-        config = AIHubConfig(
+        config = ConferLLMConfig(
             global_system_prompt="Global system prompt",
             model_list=[
                 ModelConfig(
@@ -259,7 +257,7 @@ class TestAIClient:
                 ),
             ],
         )
-        client = AIClient(config)
+        client = LLMClient(config)
         messages = [{"role": "user", "content": "Hello, world!"}]
 
         # Test model with specific system prompt
@@ -313,14 +311,15 @@ class TestAIClient:
         assert "api_key" in info["configured_params"]
         assert "max_tokens" in info["configured_params"]
         assert "temperature" in info["configured_params"]
-        assert "system_prompt" in info
-        assert info["system_prompt"] is None
-        assert "global_system_prompt" in info
-        assert info["global_system_prompt"] is None
+        assert info["has_model_system_prompt"] is False
+        assert info["uses_global_system_prompt"] is False
+        assert info["capabilities"]["declared"] is False
+        assert info["effective_image_limits"]["max_count"] == 16
+        assert "test-key" not in str(info)
 
     def test_get_model_info_with_system_prompts(self):
         """Test getting model info with system prompts."""
-        config = AIHubConfig(
+        config = ConferLLMConfig(
             global_system_prompt="Global system prompt",
             model_list=[
                 ModelConfig(
@@ -330,10 +329,12 @@ class TestAIClient:
                 )
             ],
         )
-        client = AIClient(config)
+        client = LLMClient(config)
         info = client.get_model_info("gpt-4")
-        assert info["system_prompt"] == "Model-specific system prompt"
-        assert info["global_system_prompt"] == "Global system prompt"
+        assert info["has_model_system_prompt"] is True
+        assert info["uses_global_system_prompt"] is False
+        assert "Model-specific system prompt" not in str(info)
+        assert "Global system prompt" not in str(info)
 
     def test_get_model_info_non_existing(self):
         """Test getting model info for non-existing model."""
@@ -342,15 +343,78 @@ class TestAIClient:
         ):
             self.client.get_model_info("non-existing")
 
+    def test_declared_text_only_model_rejects_images(self):
+        """Fail capability preflight before an image source must be read."""
+        config = ConferLLMConfig(
+            model_list=[
+                ModelConfig(
+                    model_name="text-only",
+                    litellm_params={"model": "openai/text"},
+                    capabilities=ModelCapabilities(
+                        input_modalities=["text"],
+                        output_modalities=["text"],
+                    ),
+                )
+            ]
+        )
+        client = LLMClient(config)
+
+        with pytest.raises(ModelCapabilityError) as exc_info:
+            client.validate_chat_request("text-only", image_count=1)
+
+        assert exc_info.value.code == "model_capability_mismatch"
+        assert exc_info.value.details["requested_modality"] == "image"
+
+    def test_unknown_capabilities_warn_but_apply_global_limits(self):
+        """Keep old configurations working without claiming image support."""
+        limits, warnings = self.client.validate_chat_request(
+            "gpt-4",
+            image_count=1,
+        )
+
+        assert limits.max_count == 16
+        assert limits.capabilities_declared is False
+        assert warnings == [
+            "Model 'gpt-4' has no declared image capabilities; "
+            "provider compatibility was not prevalidated."
+        ]
+
+    def test_model_specific_image_count_lowers_global_limit(self):
+        """Use the stricter of global and declared model image limits."""
+        config = ConferLLMConfig(
+            image_limits=ImageLimits(
+                max_count=8,
+                max_bytes_per_image=100,
+                max_total_bytes=200,
+            ),
+            model_list=[
+                ModelConfig(
+                    model_name="vision",
+                    litellm_params={"model": "openai/vision"},
+                    capabilities=ModelCapabilities(
+                        input_modalities=["text", "image"],
+                        output_modalities=["text"],
+                        max_input_images=2,
+                    ),
+                )
+            ],
+        )
+        client = LLMClient(config)
+
+        with pytest.raises(ImageLimitError) as exc_info:
+            client.validate_chat_request("vision", image_count=3)
+
+        assert exc_info.value.details["max_count"] == 2
+
     def test_litellm_suppress_debug_info(self):
         """Test that LiteLM debug info is suppressed."""
-        with patch("mcp_ai_hub.ai_client.litellm") as mock_litellm:
-            AIClient(self.config)
+        with patch("conferllm.client.litellm") as mock_litellm:
+            LLMClient(self.config)
             assert mock_litellm.suppress_debug_info is True
 
     def test_model_specific_empty_system_prompt_disables_global(self):
         """Model-level empty prompt should override and disable global prompt."""
-        config = AIHubConfig(
+        config = ConferLLMConfig(
             global_system_prompt="Global system prompt",
             model_list=[
                 ModelConfig(
@@ -360,7 +424,7 @@ class TestAIClient:
                 )
             ],
         )
-        client = AIClient(config)
+        client = LLMClient(config)
         model_cfg = config.get_model_config("gpt-4")
         assert model_cfg is not None
 

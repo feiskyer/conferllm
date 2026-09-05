@@ -1,469 +1,320 @@
-# MCP AI Hub
+# ConferLLM
 
-[![Python](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/) [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE) [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black) [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff) [![PyPI Downloads](https://static.pepy.tech/badge/mcp-ai-hub)](https://pepy.tech/projects/mcp-ai-hub)
+ConferLLM is a local command-line tool for asking configured AI models questions,
+continuing conversations, and working with images. Its bundled Agent Skill lets
+another agent use the same commands for a second opinion or a model comparison.
 
-A Model Context Protocol (MCP) server that provides unified access to various AI providers through LiteLM. Chat with OpenAI, Anthropic, and 100+ other AI models using a single, consistent interface.
+The Python package, import package, executable, and Skill are all named
+`conferllm`. LiteLLM handles provider integration; callers select a local model
+alias and keep the returned session ID.
 
-## 🌟 Overview
+## Install
 
-MCP AI Hub acts as a bridge between MCP clients (like Claude Desktop/Code) and multiple AI providers. It leverages LiteLM's unified API to provide seamless access to 100+ AI models without requiring separate integrations for each provider.
-
-**Key Benefits:**
-
-- **Unified Interface**: Single API for all AI providers
-- **100+ Providers**: OpenAI, Anthropic, Google, Azure, AWS Bedrock, and more
-- **MCP Protocol**: Native integration with Claude Desktop and Claude Code
-- **Flexible Configuration**: YAML-based configuration with Pydantic validation
-- **Multiple Transports**: stdio, SSE, and HTTP transport options
-- **Custom Endpoints**: Support for proxy servers and local deployments
-
-## Quick Start
-
-### 1. Install
-
-Choose your preferred installation method:
+From an authorized ConferLLM source checkout:
 
 ```bash
-# Option A: Install from PyPI
-pip install mcp-ai-hub
-
-# Option B: Install with uv (recommended)
-uv tool install mcp-ai-hub
-
-# Option C: Install from source
-pip install git+https://github.com/your-username/mcp-ai-hub.git
+uv tool install .
 ```
 
-**Installation Notes:**
+If you already use a Python virtual environment:
 
-- `uv` is a fast Python package installer and resolver
-- The package requires Python 3.10 or higher
-- All dependencies are automatically resolved and installed
+```bash
+python -m pip install .
+```
 
-### 2. Configure
+A supplied ConferLLM wheel can be used instead of `.`. Once a release of this
+project has been published and its identity verified, it can be installed with
+`uv tool install conferllm`. Do not assume that a same-named package is this project.
 
-Create a configuration file at `~/.ai_hub.yaml` with your API keys and model configurations:
+Verify the executable:
+
+```bash
+conferllm --version
+conferllm --help
+```
+
+ConferLLM requires Python 3.10+ and POSIX file locking (macOS/Linux). Native Windows
+is not supported.
+
+## Configure models
+
+Configuration belongs in `~/.conferllm/config.yaml`, outside the repository.
+From a source checkout, create a private directory and copy the example only
+when no configuration exists:
+
+```bash
+mkdir -p ~/.conferllm
+chmod 700 ~/.conferllm
+test ! -e ~/.conferllm/config.yaml && cp config_example.yaml ~/.conferllm/config.yaml
+chmod 600 ~/.conferllm/config.yaml
+```
+
+Alternatively, create the file using this minimal configuration and supply
+your own credentials:
 
 ```yaml
 model_list:
-  - model_name: gpt-4  # Friendly name you'll use in MCP tools
+  - model_name: reasoning
+    capabilities:
+      input_modalities: [text]
+      output_modalities: [text]
     litellm_params:
-      model: openai/gpt-4  # LiteLM provider/model identifier
-      api_key: "sk-your-openai-api-key-here"  # Your actual OpenAI API key
-      max_tokens: 2048  # Maximum response tokens
-      temperature: 0.7  # Response creativity (0.0-1.0)
+      model: openai/gpt-5
+      api_key: "replace-with-your-key"
 
-  - model_name: claude-sonnet
+  - model_name: vision
+    capabilities:
+      input_modalities: [text, image]
+      output_modalities: [text]
+      max_input_images: 8
     litellm_params:
-      model: anthropic/claude-3-5-sonnet-20241022
-      api_key: "sk-ant-your-anthropic-api-key-here"
-      max_tokens: 4096
-      temperature: 0.7
+      model: openai/gpt-4o
+      api_key: "replace-with-your-key"
 ```
 
-**Configuration Guidelines:**
+Provider model IDs and parameters are examples; availability depends on your
+provider account. Each local alias must be non-empty and unique, and
+`litellm_params.model` must identify a provider model. See
+[config_example.yaml](config_example.yaml) for additional configuration shapes.
 
-- **API Keys**: Replace placeholder keys with your actual API keys
-- **Model Names**: Use descriptive names you'll remember (e.g., `gpt-4`, `claude-sonnet`)
-- **LiteLM Models**: Use LiteLM's provider/model format (e.g., `openai/gpt-4`, `anthropic/claude-3-5-sonnet-20241022`)
-- **Parameters**: Configure `max_tokens`, `temperature`, and other LiteLM-supported parameters
-- **Security**: Keep your config file secure with appropriate file permissions (chmod 600)
+Values in `litellm_params` are forwarded to LiteLLM, except that ConferLLM owns
+`messages` and always sets `stream` to `false`. Unknown application configuration
+fields are rejected so typos do not silently change behavior.
 
-### 3. Connect to Claude Desktop
+Optional settings:
 
-Configure Claude Desktop to use MCP AI Hub by editing your configuration file:
+- `global_system_prompt`: applied to every request.
+- A model's `system_prompt`: overrides the global prompt; `""` disables it.
+- `sessions_dir`: overrides the session root. Relative YAML paths resolve
+  beside the configuration file, independently of the caller's working directory.
+- `image_limits`: limits newly attached images per turn. Defaults are 16 images,
+  20 MiB per image, and 50 MiB in total.
 
-**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+Use `--config PATH` to select another file. An explicitly selected missing file
+is an error. ConferLLM does not create, populate, or automatically migrate provider
+credentials.
+
+Check configuration without printing its values:
+
+```bash
+conferllm doctor --json
+conferllm models --json
+conferllm model-info reasoning
+```
+
+Doctor reports safe metadata and suggested next steps. It exits nonzero when
+configuration is missing, invalid, or has no model aliases, while still
+returning its diagnostic report.
+
+## Ask a model
+
+Create a conversation:
+
+```bash
+conferllm chat --model reasoning --prompt "Explain Raft leader election."
+```
+
+Human-readable output includes the session ID, name, answer, output-image
+locations, and any warnings. A name is derived locally from the first prompt;
+use `--name` to choose one explicitly.
+
+For scripts and agents, request structured output:
+
+```bash
+conferllm chat \
+  --model reasoning \
+  --name "Raft notes" \
+  --prompt "Explain Raft leader election." \
+  --json
+```
+
+The stable response envelope is `conferllm.chat.response.v1`. Its authoritative
+fields are:
 
 ```json
 {
-  "mcpServers": {
-    "ai-hub": {
-      "command": "mcp-ai-hub"
-    }
-  }
+  "schema_version": "conferllm.chat.response.v1",
+  "ok": true,
+  "session": {
+    "id": "20260905-0123456789abcdef0123456789abcdef",
+    "name": "Raft notes",
+    "model": "reasoning",
+    "turn": 1
+  },
+  "message": {
+    "text": "The answer...",
+    "content": [{"type": "text", "text": "The answer..."}]
+  },
+  "artifacts": [],
+  "warnings": []
 }
 ```
 
-### 4. Connect to Claude Code
+Compatibility fields `session_id`, `name`, `model`, and `answer` are also
+returned. New integrations should use the nested fields. Raw provider data
+is excluded unless `--include-raw-response` is supplied.
 
-```sh
-claude mcp add -s user ai-hub mcp-ai-hub
-```
-
-## Advanced Usage
-
-### CLI Options and Transport Types
-
-MCP AI Hub supports multiple transport mechanisms for different use cases:
-
-**Command Line Options:**
+For long or multiline prompts:
 
 ```bash
-# Default stdio transport (for MCP clients like Claude Desktop)
-mcp-ai-hub
-
-# Server-Sent Events transport (for web applications)
-mcp-ai-hub --transport sse --host 0.0.0.0 --port 3001
-
-# Streamable HTTP transport (for direct API calls)
-mcp-ai-hub --transport http --port 8080
-
-# Custom config file and debug logging
-mcp-ai-hub --config /path/to/config.yaml --log-level DEBUG
+conferllm chat --model reasoning --prompt-file ./prompt.md --json
 ```
 
-**Transport Type Details:**
+Successful JSON results are written to stdout. Runtime failures exit nonzero
+and write a `conferllm.error.v1` envelope to stderr; library logging is suppressed
+in JSON mode so the envelope remains parseable. Argument-parser failures use
+the normal CLI usage error and exit code 2.
 
-| Transport | Use Case | Default Host:Port | Description |
-|-----------|----------|-------------------|-------------|
-| `stdio` | MCP clients (Claude Desktop/Code) | N/A | Standard input/output, default for MCP |
-| `sse` | Web applications | localhost:3001 | Server-Sent Events for real-time web apps |
-| `http` | Direct API calls | localhost:3001 (override with `--port`) | HTTP transport with streaming support |
+## Continue and find conversations
 
-**CLI Arguments:**
+Use the actual session ID returned by the preceding call:
 
-- `--transport {stdio,sse,http}`: Transport protocol (default: stdio)
-- `--host HOST`: Host address for SSE/HTTP (default: localhost)
-- `--port PORT`: Port number for SSE/HTTP (default: 3001; override if you need a different port)
-- `--config CONFIG`: Custom config file path (default: ~/.ai_hub.yaml)
-- `--log-level {DEBUG,INFO,WARNING,ERROR}`: Logging verbosity (default: INFO)
-
-## Usage
-
-Once MCP AI Hub is connected to your MCP client, you can interact with AI models using these tools:
-
-### MCP Tool Reference
-
-**Primary Chat Tool:**
-
-```python
-chat(model_name: str, message: str | list[dict]) -> str
+```bash
+conferllm chat \
+  --session 20260905-0123456789abcdef0123456789abcdef \
+  --prompt "Now compare it with Paxos." \
+  --json
 ```
 
-- **model_name**: Name of the configured model (e.g., "gpt-4", "claude-sonnet")
-- **message**: String message or OpenAI-style message list
-- **Returns**: AI model response as string
+Exactly one of `--model` and `--session` is required. A session retains its
+model and name; `--name` is only accepted when creating a conversation.
+ConferLLM restores prior successful turns automatically.
 
-**Model Discovery Tools:**
+Find conversations using metadata:
 
-```python
-list_models() -> list[str]
+```bash
+conferllm sessions list
+conferllm sessions list --query raft --json
+conferllm sessions list --model reasoning --since 2026-09-01 --limit 20 --json
 ```
 
-- **Returns**: List of all configured model names
+Filters combine with AND semantics. `--query` matches the ID or name without
+case sensitivity; model aliases match exactly. `--since` and `--until` are
+inclusive creation dates. The default limit is 50; `--limit 0` is unlimited.
+Listing never searches message bodies and reports corrupt headers as warnings
+without hiding unrelated valid sessions.
 
-```python
-get_model_info(model_name: str) -> dict
+For a model comparison, create one independent session per model using the
+same prompt. Attribute each answer and retain each session ID; a conversation
+does not switch models.
+
+## Work with images
+
+Repeat `--image` to preserve input order:
+
+```bash
+conferllm chat \
+  --model vision \
+  --prompt "Compare these screenshots." \
+  --image ./before.png \
+  --image ./after.png \
+  --json
 ```
 
-- **model_name**: Name of the configured model
-- **Returns**: Model configuration details including provider, parameters, etc.
+Accepted images are copied into private, session-owned storage. Follow-ups
+use those copies even if the original files change or disappear. PNG, JPEG,
+GIF, WebP, BMP, and SVG MIME types are detected from content rather than file
+extensions.
 
-## Configuration
+Declared capabilities are checked before reading images or calling the
+provider. Application limits bound new attachments; a model's
+`max_input_images` also counts images replayed from history. Unknown image
+capability produces a warning, not a claim of provider support.
 
-MCP AI Hub supports 100+ AI providers through LiteLM. Configure your models in `~/.ai_hub.yaml` with API keys and custom parameters.
+Models that return images can produce multiple ordered output artifacts,
+including image-only replies. `message.content` contains their references and
+`artifacts` contains their MIME type, size, SHA-256, local path, and stable
+`conferllm://sessions/.../artifacts/...` URI.
 
-### System Prompts
+Use `--image-output-dir PATH` for additional exported copies. If export fails,
+the canonical artifacts and successful conversation remain available. Preserve
+the session ID and handle the warning instead of repeating the model call.
 
-You can define system prompts at two levels:
+Generated images must be embedded data URLs. ConferLLM does not download
+remote-only image outputs, execute provider tool calls, or silently discard
+unsupported content.
 
-- `global_system_prompt`: Applied to all models by default
-- Per-model `system_prompt`: Overrides the global prompt for that model
+## Install the Agent Skill
 
-Precedence: model-specific prompt > global prompt. If a model's `system_prompt` is set to an empty string, it disables the global prompt for that model.
+The source layout is:
 
-```yaml
-global_system_prompt: "You are a helpful AI assistant. Be concise."
-
-model_list:
-  - model_name: gpt-4
-    system_prompt: "You are a precise coding assistant."
-    litellm_params:
-      model: openai/gpt-4
-      api_key: "sk-your-openai-api-key"
-
-  - model_name: claude-sonnet
-    # Empty string disables the global prompt for this model
-    system_prompt: ""
-    litellm_params:
-      model: anthropic/claude-3-5-sonnet-20241022
-      api_key: "sk-ant-your-anthropic-api-key"
+```text
+skills/conferllm/
+├── SKILL.md
+├── agents/openai.yaml
+└── references/
+    ├── installation.md
+    ├── multimodal.md
+    └── errors.md
 ```
 
-Notes:
-- The server prepends the configured system prompt to the message list it sends to providers.
-- If you pass an explicit message list that already contains a `system` message, both system messages will be included in order (configured prompt first).
+[skills/conferllm/](skills/conferllm/) is the single source of truth for the Skill.
+The wheel embeds the same files; the source distribution preserves this layout.
+Source and installed Skills use identical relative reference paths.
 
-### Supported Providers
+Install the version bundled with the executable:
 
-**Major AI Providers:**
-
-- **OpenAI**: GPT-4, GPT-3.5-turbo, GPT-4-turbo, etc.
-- **Anthropic**: Claude 3.5 Sonnet, Claude 3 Haiku, Claude 3 Opus
-- **Google**: Gemini Pro, Gemini Pro Vision, Gemini Ultra
-- **Azure OpenAI**: Azure-hosted OpenAI models
-- **AWS Bedrock**: Claude, Llama, Jurassic, and more
-- **Together AI**: Llama, Mistral, Falcon, and open-source models
-- **Hugging Face**: Various open-source models
-- **Local Models**: Ollama, LM Studio, and other local deployments
-
-**Configuration Parameters:**
-
-- **api_key**: Your provider API key (required)
-- **max_tokens**: Maximum response tokens (optional)
-- **temperature**: Response creativity 0.0-1.0 (optional)
-- **api_base**: Custom endpoint URL (for proxies/local servers)
-- **Additional**: All LiteLM-supported parameters
-
-### Configuration Examples
-
-**Basic Configuration:**
-
-```yaml
-global_system_prompt: "You are a helpful AI assistant. Be concise."
-
-model_list:
-  - model_name: gpt-4
-    system_prompt: "You are a precise coding assistant."  # overrides global
-    litellm_params:
-      model: openai/gpt-4
-      api_key: "sk-your-actual-openai-api-key"
-      max_tokens: 2048
-      temperature: 0.7
-
-  - model_name: claude-sonnet
-    litellm_params:
-      model: anthropic/claude-3-5-sonnet-20241022
-      api_key: "sk-ant-your-actual-anthropic-api-key"
-      max_tokens: 4096
-      temperature: 0.7
+```bash
+conferllm skill install
+conferllm skill install --target codex
+conferllm skill install --destination /custom/skills/conferllm
 ```
 
-**Custom Parameters:**
+Defaults are `~/.agents/skills/conferllm` and `~/.codex/skills/conferllm`. Installation
+is idempotent. A different existing installation is preserved unless `--force`
+is explicitly requested. Home, workspace, package directories, and their
+ancestors are never valid replacement targets.
 
-```yaml
-model_list:
-  - model_name: gpt-4-creative
-    litellm_params:
-      model: openai/gpt-4
-      api_key: "sk-your-openai-key"
-      max_tokens: 4096
-      temperature: 0.9  # Higher creativity
-      top_p: 0.95
-      frequency_penalty: 0.1
-      presence_penalty: 0.1
+An agent invoking `$conferllm` discovers configured aliases, retains session IDs,
+preserves image order, and attributes answers. It uses the CLI rather than
+opening credential or session files.
 
-  - model_name: claude-analytical
-    litellm_params:
-      model: anthropic/claude-3-5-sonnet-20241022
-      api_key: "sk-ant-your-anthropic-key"
-      max_tokens: 8192
-      temperature: 0.3  # Lower creativity for analytical tasks
-      stop_sequences: ["\n\n", "Human:"]
-```
+## Storage and reliability
 
-**Local LLM Server Configuration:**
+Sessions are UTF-8 JSONL files below `~/.conferllm/sessions/YYYY/MM/DD/`. Every
+committed turn contains a complete user/assistant pair and its artifact
+metadata. Directories use mode `0700`; session and image files use `0600`.
+The configuration file remains user-managed.
 
-```yaml
-model_list:
-  - model_name: local-llama
-    litellm_params:
-      model: openai/llama-2-7b-chat
-      api_key: "dummy-key"  # Local servers often accept any API key
-      api_base: "http://localhost:8080/v1"  # Local OpenAI-compatible server
-      max_tokens: 2048
-      temperature: 0.7
-```
+Continuation holds a thread/process lock across loading, model execution, and
+atomic JSONL replacement. Stored image size/hash checks precede replay.
+Failed provider calls do not append a partial turn.
 
-For more providers, please refer to the LiteLLM docs: <https://docs.litellm.ai/docs/providers>.
+JSONL is the commit record. A locked continuation can recover the next
+uncommitted image directory left by a crash; it never removes committed turns.
+Early staging leftovers are not automatically swept. This is not an
+exactly-once guarantee for provider calls, and long histories are not silently
+summarized or truncated.
+
+Session content can be sensitive. Keep credentials and conversations out of
+version control. Configuration/provider errors do not echo raw input or
+provider exception payloads.
 
 ## Development
 
-**Setup:**
+Use `uv>=0.12.9,<0.13`:
 
 ```bash
-# Install all dependencies including dev dependencies
-uv sync
-
-# Install package in development mode
-uv pip install -e ".[dev]"
-
-# Add new runtime dependencies
-uv add package_name
-
-# Add new development dependencies
-uv add --dev package_name
-
-# Update dependencies
-uv sync --upgrade
-```
-
-**Running and Testing:**
-
-```bash
-# Run the MCP server
-uv run mcp-ai-hub
-
-# Run with custom configuration
-uv run mcp-ai-hub --config ./custom_config.yaml --log-level DEBUG
-
-# Run with different transport
-uv run mcp-ai-hub --transport sse --port 3001
-
-# Run tests (when test suite is added)
-uv run pytest
-
-# Run tests with coverage
-uv run pytest --cov=src/mcp_ai_hub --cov-report=html
-```
-
-**Code Quality:**
-
-```bash
-# Format code with ruff
-uv run ruff format .
-
-# Lint code
+uv sync --extra dev
+uv run ruff format --check .
 uv run ruff check .
-
-# Type checking with mypy
 uv run mypy src/
-
-# Run all quality checks
-uv run ruff format . && uv run ruff check . && uv run mypy src/
+uv run pytest
+uv lock --check
+uv build
+git diff --check
 ```
 
-## Troubleshooting
+Tests isolate the user home and block unmocked provider calls. They cover
+persistence, process/thread locking, fault recovery, protocol integration,
+Skill installation, and wheel/source-distribution content.
 
-### Configuration Issues
-
-**Configuration File Problems:**
-
-- **File Location**: Ensure `~/.ai_hub.yaml` exists in your home directory
-- **YAML Validity**: Validate YAML syntax using online validators or `python -c "import yaml; yaml.safe_load(open('~/.ai_hub.yaml'))"`
-- **File Permissions**: Set secure permissions with `chmod 600 ~/.ai_hub.yaml`
-- **Path Resolution**: Use absolute paths in custom config locations
-
-**Configuration Validation:**
-
-- **Required Fields**: Each model must have `model_name` and `litellm_params`
-- **API Keys**: Verify API keys are properly quoted and not expired
-- **Model Formats**: Use LiteLM-compatible model identifiers (e.g., `openai/gpt-4`, `anthropic/claude-3-5-sonnet-20241022`)
-
-### API and Authentication Errors
-
-**Authentication Issues:**
-
-- **Invalid API Keys**: Check for typos, extra spaces, or expired keys
-- **Insufficient Permissions**: Verify API keys have necessary model access permissions
-- **Rate Limiting**: Monitor API usage and implement retry logic if needed
-- **Regional Restrictions**: Some models may not be available in all regions
-
-**API-Specific Troubleshooting:**
-
-- **OpenAI**: Check organization settings and model availability
-- **Anthropic**: Verify Claude model access and usage limits
-- **Azure OpenAI**: Ensure proper resource deployment and endpoint configuration
-- **Google Gemini**: Check project setup and API enablement
-
-### MCP Connection Issues
-
-**Server Startup Problems:**
-
-- **Port Conflicts**: Use different ports for SSE/HTTP transports if defaults are in use
-- **Permission Errors**: Ensure executable permissions for `mcp-ai-hub` command
-- **Python Path**: Verify Python environment and package installation
-
-**Client Configuration Issues:**
-
-- **Command Path**: Ensure `mcp-ai-hub` is in PATH or use full absolute path
-- **Working Directory**: Some MCP clients require specific working directory settings
-- **Transport Mismatch**: Use stdio transport for Claude Desktop/Code
-
-### Performance and Reliability
-
-**Response Time Issues:**
-
-- **Network Latency**: Use geographically closer API endpoints when possible
-- **Model Selection**: Some models are faster than others (e.g., GPT-3.5 vs GPT-4)
-- **Token Limits**: Large `max_tokens` values can increase response time
-
-**Reliability Improvements:**
-
-- **Retry Logic**: Implement exponential backoff for transient failures
-- **Timeout Configuration**: Set appropriate timeouts for your use case
-- **Health Checks**: Monitor server status and restart if needed
-- **Load Balancing**: Use multiple model configurations for redundancy
+Key dependency major versions are bounded, and `uv.lock` records the development
+resolution. Python 3.10 uses the verified LiteLLM 1.97.x line; Python 3.11+
+permits LiteLLM 1.x from 1.99.0. The project uses uv's centralized environment
+support so editable installs do not depend on hidden `.pth` files in synced
+macOS folders.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## Contributing
-
-We welcome contributions! Please follow these guidelines:
-
-### Development Workflow
-
-1. **Fork and Clone**: Fork the repository and clone your fork
-2. **Create Branch**: Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. **Development Setup**: Install dependencies with `uv sync`
-4. **Make Changes**: Implement your feature or fix
-5. **Testing**: Add tests and ensure all tests pass
-6. **Code Quality**: Run formatting, linting, and type checking
-7. **Documentation**: Update documentation if needed
-8. **Submit PR**: Create a pull request with detailed description
-
-### Code Standards
-
-**Python Style:**
-
-- Follow PEP 8 style guidelines
-- Use type hints for all functions
-- Add docstrings for public functions and classes
-- Keep functions focused and small
-
-**Testing Requirements:**
-
-- Write tests for new functionality
-- Ensure existing tests continue to pass
-- Aim for good test coverage
-- Test edge cases and error conditions
-
-**Documentation:**
-
-- Update README.md for user-facing changes
-- Add inline comments for complex logic
-- Update configuration examples if needed
-- Document breaking changes clearly
-
-### Quality Checks
-
-Before submitting a PR, ensure:
-
-```bash
-# All tests pass
-uv run pytest
-
-# Code formatting
-uv run ruff format .
-
-# Linting passes
-uv run ruff check .
-
-# Type checking passes
-uv run mypy src/
-
-# Documentation is up to date
-# Configuration examples are valid
-```
-
-### Issues and Feature Requests
-
-- Use GitHub Issues for bug reports and feature requests
-- Provide detailed reproduction steps for bugs
-- Include configuration examples when relevant
-- Check existing issues before creating new ones
-- Label issues appropriately
+ConferLLM is released under the [MIT License](LICENSE).

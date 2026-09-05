@@ -1,12 +1,13 @@
-# MCP AI Hub Configuration File
-# ==============================
+# ConferLLM Configuration File
+# =========================
 #
-# This is a comprehensive example configuration for MCP AI Hub.
-# Copy this file to ~/.ai_hub.yaml and customize it for your needs.
+# This is a comprehensive example configuration for ConferLLM.
+# Copy this file to ~/.conferllm/config.yaml and customize it for your needs.
 #
 # IMPORTANT SECURITY NOTES:
 # - Replace ALL placeholder API keys with your actual keys
-# - Set file permissions: chmod 600 ~/.ai_hub.yaml
+# - Set directory permissions: chmod 700 ~/.conferllm
+# - Set file permissions: chmod 600 ~/.conferllm/config.yaml
 # - NEVER commit this file to version control
 # - Use environment variables or secret management for production
 
@@ -17,10 +18,20 @@
 # Removal tip: Comment out or delete this line to disable global system prompts.
 global_system_prompt: "You are a helpful AI assistant. Be concise and accurate in your responses."
 
+# Image Safety Limits (Optional)
+# ------------------------------
+# These bound newly attached images before any provider request. A model's
+# max_input_images also includes images replayed from earlier turns.
+image_limits:
+  max_count: 16
+  max_bytes_per_image: 20971520  # 20 MiB
+  max_total_bytes: 52428800  # 50 MiB
+
 # Model Configuration
 # -------------------
-# Each entry in model_list defines a model you can use with MCP AI Hub
-# The model_name is what you'll use in MCP tools (e.g., chat("gpt-4", "Hello"))
+# Each entry in model_list defines a model you can use with ConferLLM
+# The model_name is what you'll use in CLI and MCP calls
+# (e.g., chat(message="Hello", model="gpt-4"))
 # The litellm_params configure the actual provider connection
 # Optional: Add system_prompt field to override global system prompt for specific models
 
@@ -31,7 +42,12 @@ model_list:
 
   - model_name: gpt-4o  # Friendly name for MCP tools
     # Model-specific system prompt (overrides global_system_prompt for this model only)
-    system_prompt: "You are GPT-4o, OpenAI's most advanced multimodal model. You can process text, images, and other inputs."
+    system_prompt: "You are a helpful multimodal assistant."
+    # Optional non-secret metadata used for validation before provider calls.
+    capabilities:
+      input_modalities: [text, image]
+      output_modalities: [text]
+      max_input_images: 8
     litellm_params:
       # LiteLM provider/model identifier (format: provider/model-name)
       model: openai/gpt-4o
@@ -48,6 +64,9 @@ model_list:
       # stop: ["\n\n", "Human:"]  # Stop sequences
 
   - model_name: gpt-5
+    capabilities:
+      input_modalities: [text]
+      output_modalities: [text]
     litellm_params:
       model: openai/gpt-5
       api_key: "sk-your-openai-api-key-here"  # REPLACE WITH YOUR KEY
@@ -61,6 +80,10 @@ model_list:
   - model_name: claude-sonnet  # Claude 4 Sonnet - balanced performance
     # Model-specific system prompt (overrides global_system_prompt for this model only)
     system_prompt: "You are Claude 4 Sonnet, an AI assistant created by Anthropic. You excel at coding, analysis, and creative tasks."
+    capabilities:
+      input_modalities: [text, image]
+      output_modalities: [text]
+      max_input_images: 8
     litellm_params:
       # Full model identifier with version
       model: anthropic/claude-sonnet-4-20250514
@@ -73,12 +96,20 @@ model_list:
   # GOOGLE MODELS
   # ============================================================================
   - model_name: gemini-2.5-pro
+    capabilities:
+      input_modalities: [text, image]
+      output_modalities: [text]
+      max_input_images: 8
     litellm_params:
       model: gemini/gemini-2.5-pro
       api_key: "your-gemini-api-key"  # REPLACE WITH YOUR KEY
       max_tokens: 8000
       temperature: 0.7
   - model_name: gemini-2.5-flash-image-preview
+    capabilities:
+      input_modalities: [text, image]
+      output_modalities: [text, image]
+      max_input_images: 8
     litellm_params:
       model: gemini/gemini-2.5-flash-image-preview
       api_key: "your-gemini-api-key"  # REPLACE WITH YOUR KEY

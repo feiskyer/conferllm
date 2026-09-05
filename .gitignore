@@ -70,9 +70,6 @@ instance/
 # Scrapy stuff:
 .scrapy
 
-# Sphinx documentation
-docs/_build/
-
 # PyBuilder
 target/
 
@@ -105,7 +102,9 @@ celerybeat.pid
 
 # Environments
 .env
-.venv
+# uv keeps the real environment in its cache. Ignore the compatibility link
+# and any numbered copies created by synced-folder conflict resolution.
+/.venv*
 env/
 venv/
 ENV/
