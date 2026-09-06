@@ -4,7 +4,7 @@
 [project]
 # Package identification
 name = "conferllm"  # PyPI package name
-version = "0.1.0"  # Package version (follow semantic versioning)
+version = "0.1.1"  # Package version (follow semantic versioning)
 description = "A local CLI and MCP server for talking to configured AI models through LiteLLM."
 readme = "README.md"  # Long description from README file
 license = { file = "LICENSE" }
@@ -256,6 +256,7 @@ only-include = [
     "LICENSE",
     "README.md",
     "config_example.yaml",
+    "docs",
     "pyproject.toml",
     "scripts/upgrade_dependency.py",
     "skills/conferllm",

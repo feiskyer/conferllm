@@ -83,6 +83,7 @@ def test_wheel_contains_complete_version_matched_skill(tmp_path: Path) -> None:
     with tarfile.open(next(output_dir.glob("conferllm-*.tar.gz"))) as archive:
         names = set(archive.getnames())
         prefix = f"conferllm-{package_version}/"
+        assert prefix + "docs/reference.md" in names
         assert prefix + "skills/conferllm/SKILL.md" in names
         assert prefix + "skills/conferllm/agents/openai.yaml" in names
         assert all(

@@ -1,319 +1,161 @@
 # ConferLLM
 
-ConferLLM is a local command-line tool for asking configured AI models questions,
-continuing conversations, and working with images. Its bundled Agent Skill lets
-another agent use the same commands for a second opinion or a model comparison.
+ConferLLM is a CLI for people and agents to consult AI models, continue conversations, and work with images. Use it to get a second opinion, compare answers across models, or call a model from a script with structured JSON output.
 
-The Python package, import package, executable, and Skill are all named
-`conferllm`. LiteLLM handles provider integration; callers select a local model
-alias and keep the returned session ID.
+It connects to providers through LiteLLM and stores conversations locally. A bundled Agent Skill and an MCP server expose the same conversation features.
 
-## Install
+## Quick start
 
-From an authorized ConferLLM source checkout:
+Requires Python 3.10+. Bring credentials for the provider you want to use.
 
-```bash
-uv tool install .
-```
+### 1. Install
 
-If you already use a Python virtual environment:
+Install with [uv](https://docs.astral.sh/uv/getting-started/installation/) (recommended):
 
 ```bash
-python -m pip install .
+uv tool install conferllm
 ```
 
-A supplied ConferLLM wheel can be used instead of `.`. Once a release of this
-project has been published and its identity verified, it can be installed with
-`uv tool install conferllm`. Do not assume that a same-named package is this project.
-
-Verify the executable:
+Alternatively, use pip in an activated Python virtual environment:
 
 ```bash
-conferllm --version
-conferllm --help
+pip install conferllm
 ```
 
-ConferLLM requires Python 3.10+ and POSIX file locking (macOS/Linux). Native Windows
-is not supported.
+If your shell cannot find the uv-installed command, run `uv tool update-shell` and reopen the terminal. See the [installation reference](docs/reference.md#installation) for details.
 
-## Configure models
+### 2. Configure one model
 
-Configuration belongs in `~/.conferllm/config.yaml`, outside the repository.
-From a source checkout, create a private directory and copy the example only
-when no configuration exists:
+Create a private configuration directory:
 
 ```bash
 mkdir -p ~/.conferllm
 chmod 700 ~/.conferllm
-test ! -e ~/.conferllm/config.yaml && cp config_example.yaml ~/.conferllm/config.yaml
-chmod 600 ~/.conferllm/config.yaml
 ```
 
-Alternatively, create the file using this minimal configuration and supply
-your own credentials:
+Create `~/.conferllm/config.yaml` with the following content and replace the example API key. If you already have a configuration, add the model without duplicating an existing alias or overwriting your settings.
 
 ```yaml
 model_list:
-  - model_name: reasoning
-    capabilities:
-      input_modalities: [text]
-      output_modalities: [text]
-    litellm_params:
-      model: openai/gpt-5
-      api_key: "replace-with-your-key"
-
-  - model_name: vision
+  - model_name: gpt-4o
     capabilities:
       input_modalities: [text, image]
       output_modalities: [text]
-      max_input_images: 8
     litellm_params:
       model: openai/gpt-4o
       api_key: "replace-with-your-key"
 ```
 
-Provider model IDs and parameters are examples; availability depends on your
-provider account. Each local alias must be non-empty and unique, and
-`litellm_params.model` must identify a provider model. See
-[config_example.yaml](config_example.yaml) for additional configuration shapes.
-
-Values in `litellm_params` are forwarded to LiteLLM, except that ConferLLM owns
-`messages` and always sets `stream` to `false`. Unknown application configuration
-fields are rejected so typos do not silently change behavior.
-
-Optional settings:
-
-- `global_system_prompt`: applied to every request.
-- A model's `system_prompt`: overrides the global prompt; `""` disables it.
-- `sessions_dir`: overrides the session root. Relative YAML paths resolve
-  beside the configuration file, independently of the caller's working directory.
-- `image_limits`: limits newly attached images per turn. Defaults are 16 images,
-  20 MiB per image, and 50 MiB in total.
-
-Use `--config PATH` to select another file. An explicitly selected missing file
-is an error. ConferLLM does not create, populate, or automatically migrate provider
-credentials.
-
-Check configuration without printing its values:
-
 ```bash
-conferllm doctor --json
-conferllm models --json
-conferllm model-info reasoning
+chmod 600 ~/.conferllm/config.yaml
 ```
 
-Doctor reports safe metadata and suggested next steps. It exits nonzero when
-configuration is missing, invalid, or has no model aliases, while still
-returning its diagnostic report.
+`model_name` is the alias used in commands; substitute your own if it differs. This example uses OpenAI, and model availability depends on your account. For other providers and local endpoints, see [config_example.yaml](config_example.yaml).
 
-## Ask a model
-
-Create a conversation:
+### 3. Ask a question
 
 ```bash
-conferllm chat --model reasoning --prompt "Explain Raft leader election."
+conferllm chat --model gpt-4o --prompt "Explain Raft leader election."
 ```
 
-Human-readable output includes the session ID, name, answer, output-image
-locations, and any warnings. A name is derived locally from the first prompt;
-use `--name` to choose one explicitly.
+The output includes an answer and a session ID. Keep the ID to ask follow-up questions with the conversation history restored.
 
-For scripts and agents, request structured output:
+## Common tasks
+
+### Continue or find a conversation
+
+Replace `SESSION_ID` with the ID returned by your chat:
 
 ```bash
-conferllm chat \
-  --model reasoning \
-  --name "Raft notes" \
-  --prompt "Explain Raft leader election." \
-  --json
-```
-
-The stable response envelope is `conferllm.chat.response.v1`. Its authoritative
-fields are:
-
-```json
-{
-  "schema_version": "conferllm.chat.response.v1",
-  "ok": true,
-  "session": {
-    "id": "20260905-0123456789abcdef0123456789abcdef",
-    "name": "Raft notes",
-    "model": "reasoning",
-    "turn": 1
-  },
-  "message": {
-    "text": "The answer...",
-    "content": [{"type": "text", "text": "The answer..."}]
-  },
-  "artifacts": [],
-  "warnings": []
-}
-```
-
-Compatibility fields `session_id`, `name`, `model`, and `answer` are also
-returned. New integrations should use the nested fields. Raw provider data
-is excluded unless `--include-raw-response` is supplied.
-
-For long or multiline prompts:
-
-```bash
-conferllm chat --model reasoning --prompt-file ./prompt.md --json
-```
-
-Successful JSON results are written to stdout. Runtime failures exit nonzero
-and write a `conferllm.error.v1` envelope to stderr; library logging is suppressed
-in JSON mode so the envelope remains parseable. Argument-parser failures use
-the normal CLI usage error and exit code 2.
-
-## Continue and find conversations
-
-Use the actual session ID returned by the preceding call:
-
-```bash
-conferllm chat \
-  --session 20260905-0123456789abcdef0123456789abcdef \
-  --prompt "Now compare it with Paxos." \
-  --json
-```
-
-Exactly one of `--model` and `--session` is required. A session retains its
-model and name; `--name` is only accepted when creating a conversation.
-ConferLLM restores prior successful turns automatically.
-
-Find conversations using metadata:
-
-```bash
+conferllm chat --session SESSION_ID --prompt "Now compare it with Paxos."
 conferllm sessions list
 conferllm sessions list --query raft --json
-conferllm sessions list --model reasoning --since 2026-09-01 --limit 20 --json
 ```
 
-Filters combine with AND semantics. `--query` matches the ID or name without
-case sensitivity; model aliases match exactly. `--since` and `--until` are
-inclusive creation dates. The default limit is 50; `--limit 0` is unlimited.
-Listing never searches message bodies and reports corrupt headers as warnings
-without hiding unrelated valid sessions.
+A session keeps its original model. To compare models, start a separate chat for each configured alias using the same prompt. Use `--name "Raft notes"` when creating a chat to give it a memorable name.
 
-For a model comparison, create one independent session per model using the
-same prompt. Attribute each answer and retain each session ID; a conversation
-does not switch models.
+### Use JSON or a prompt file
 
-## Work with images
+```bash
+conferllm chat --model gpt-4o --prompt "Explain Raft leader election." --json
+conferllm chat --model gpt-4o --prompt-file ./prompt.md --json
+```
 
-Repeat `--image` to preserve input order:
+Write a long or multiline prompt into `prompt.md` before using `--prompt-file`. JSON output includes `session.id`, `message.text`, `artifacts`, and `warnings`. See the [response and error reference](docs/reference.md#json-output) for the full contract.
+
+### Include images
+
+With a model that supports images, repeat `--image` to attach your files in order:
 
 ```bash
 conferllm chat \
-  --model vision \
+  --model gpt-4o \
   --prompt "Compare these screenshots." \
   --image ./before.png \
   --image ./after.png \
   --json
 ```
 
-Accepted images are copied into private, session-owned storage. Follow-ups
-use those copies even if the original files change or disappear. PNG, JPEG,
-GIF, WebP, BMP, and SVG MIME types are detected from content rather than file
-extensions.
+Images are copied into the session so follow-ups can reuse them. For models that return images, `--image-output-dir ./output` exports additional copies. See [image support and limits](docs/reference.md#images).
 
-Declared capabilities are checked before reading images or calling the
-provider. Application limits bound new attachments; a model's
-`max_input_images` also counts images replayed from history. Unknown image
-capability produces a warning, not a claim of provider support.
+## Use from an agent
 
-Models that return images can produce multiple ordered output artifacts,
-including image-only replies. `message.content` contains their references and
-`artifacts` contains their MIME type, size, SHA-256, local path, and stable
-`conferllm://sessions/.../artifacts/...` URI.
-
-Use `--image-output-dir PATH` for additional exported copies. If export fails,
-the canonical artifacts and successful conversation remain available. Preserve
-the session ID and handle the warning instead of repeating the model call.
-
-Generated images must be embedded data URLs. ConferLLM does not download
-remote-only image outputs, execute provider tool calls, or silently discard
-unsupported content.
-
-## Install the Agent Skill
-
-The source layout is:
-
-```text
-skills/conferllm/
-├── SKILL.md
-├── agents/openai.yaml
-└── references/
-    ├── installation.md
-    ├── multimodal.md
-    └── errors.md
-```
-
-[skills/conferllm/](skills/conferllm/) is the single source of truth for the Skill.
-The wheel embeds the same files; the source distribution preserves this layout.
-Source and installed Skills use identical relative reference paths.
-
-Install the version bundled with the executable:
+Install the bundled Skill into `~/.agents/skills/conferllm`:
 
 ```bash
 conferllm skill install
-conferllm skill install --target codex
-conferllm skill install --destination /custom/skills/conferllm
 ```
 
-Defaults are `~/.agents/skills/conferllm` and `~/.codex/skills/conferllm`. Installation
-is idempotent. A different existing installation is preserved unless `--force`
-is explicitly requested. Home, workspace, package directories, and their
-ancestors are never valid replacement targets.
+For `~/.codex/skills/conferllm`, use `conferllm skill install --target codex`. Then ask your agent to use the ConferLLM Skill for a second opinion or model comparison. The Skill discovers configured aliases and uses the CLI without opening credential or session files.
 
-An agent invoking `$conferllm` discovers configured aliases, retains session IDs,
-preserves image order, and attributes answers. It uses the CLI rather than
-opening credential or session files.
+See [Skill installation details](docs/reference.md#agent-skill) for custom destinations and updates.
 
-## Storage and reliability
+## Use as an MCP server
 
-Sessions are UTF-8 JSONL files below `~/.conferllm/sessions/YYYY/MM/DD/`. Every
-committed turn contains a complete user/assistant pair and its artifact
-metadata. Directories use mode `0700`; session and image files use `0600`.
-The configuration file remains user-managed.
+The stdio server starts with `conferllm serve`. For clients that use an `mcpServers` configuration, add:
 
-Continuation holds a thread/process lock across loading, model execution, and
-atomic JSONL replacement. Stored image size/hash checks precede replay.
-Failed provider calls do not append a partial turn.
+```json
+{
+  "mcpServers": {
+    "conferllm": {
+      "command": "conferllm",
+      "args": ["serve"]
+    }
+  }
+}
+```
 
-JSONL is the commit record. A locked continuation can recover the next
-uncommitted image directory left by a crash; it never removes committed turns.
-Early staging leftovers are not automatically swept. This is not an
-exactly-once guarantee for provider calls, and long histories are not silently
-summarized or truncated.
+The client launches the server; you do not need to start it separately. If the client cannot find the command, use the absolute path from `command -v conferllm`. See the [MCP reference](docs/reference.md#mcp-server) for tools and transports.
 
-Session content can be sensitive. Keep credentials and conversations out of
-version control. Configuration/provider errors do not echo raw input or
-provider exception payloads.
+## Configuration and troubleshooting
 
-## Development
-
-Use `uv>=0.12.9,<0.13`:
+Inspect configuration without printing credentials:
 
 ```bash
-uv sync --extra dev
-uv run ruff format --check .
-uv run ruff check .
-uv run mypy src/
-uv run pytest
-uv lock --check
-uv build
-git diff --check
+conferllm doctor --json
+conferllm models --json
+conferllm model-info gpt-4o
 ```
 
-Tests isolate the user home and block unmocked provider calls. They cover
-persistence, process/thread locking, fault recovery, protocol integration,
-Skill installation, and wheel/source-distribution content.
+Use `--config PATH` with a command to select another configuration file. If a model is not found, use an alias listed by `conferllm models`. See [configuration options](docs/reference.md#configuration) and [troubleshooting](docs/reference.md#troubleshooting).
 
-Key dependency major versions are bounded, and `uv.lock` records the development
-resolution. Python 3.10 uses the verified LiteLLM 1.97.x line; Python 3.11+
-permits LiteLLM 1.x from 1.99.0. The project uses uv's centralized environment
-support so editable installs do not depend on hidden `.pth` files in synced
-macOS folders.
+## Privacy and limits
+
+Prompts, history, and images go to the provider endpoint you configure; a local CLI does not imply offline inference. Sessions and image copies remain under `~/.conferllm/sessions/` by default. Keep them and your credentials out of version control. Stored directories use `0700`; session and image files use `0600`.
+
+Responses are non-streaming. ConferLLM does not execute provider tool calls, download remote-only image outputs, or automatically shorten long histories. See [storage and reliability](docs/reference.md#storage-and-reliability).
+
+## Development and contributing
+
+Report bugs in [GitHub Issues](https://github.com/feiskyer/mcp-ai-hub/issues); pull requests are welcome too. Include reproduction steps and sanitized output, never credentials or private conversations. See the [source setup and development checks](docs/reference.md#development).
+
+To keep an installed CLI linked to this checkout while editing:
+
+```bash
+uv tool install --editable . --force
+```
+
+This replaces an existing ConferLLM tool install. Python source edits take effect on the next invocation; restart any running server after edits. Reinstall when dependencies or command entry points change.
 
 ## License
 

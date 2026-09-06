@@ -1,6 +1,6 @@
 interface:
   display_name: "ConferLLM"
-  short_description: "Query and compare configured local AI models"
+  short_description: "Query configured AI models with persistent chats"
   default_prompt: "Use $conferllm to ask an appropriate configured model for an attributed second opinion."
 policy:
   allow_implicit_invocation: true

@@ -1,7 +1,6 @@
 # Errors and safe diagnostics
 
-Use this reference when a ConferLLM command fails or an agent needs
-machine-readable diagnostics.
+Use this reference when a command fails, a result contains warnings, or an agent needs machine-readable diagnostics.
 
 Run:
 
@@ -9,16 +8,19 @@ Run:
 conferllm doctor --json
 ```
 
-Doctor reports only package/runtime metadata, configuration parse state, model
-aliases, declared capability summaries, paths, permission checks, detected
-Skill installations, and suggested next steps. It does not expose provider
-parameter values, prompts, or session content.
-An invalid or missing configuration makes `doctor` exit nonzero; its JSON
-report is still on stdout. Runtime `chat --json` errors are on stderr and
-also exit nonzero.
+Doctor reports safe package/runtime metadata, configuration parse state, aliases, declared capabilities, paths, permission checks, detected Skill installations, and suggested next steps. It does not expose credentials, prompts, or session content, and it does not test provider connectivity.
 
-JSON command failures use the `conferllm.error.v1` envelope. Prefer its stable
-error code over parsing prose. Initial codes include:
+## Output and exit status
+
+- Successful `chat --json` calls exit 0 and write a `conferllm.chat.response.v1` result to stdout. Warnings can accompany a committed success.
+- Runtime failures handled by the CLI in JSON mode exit 1 and write a `conferllm.error.v1` envelope to stderr. Read `error.code`, `error.message`, and optional `error.details`.
+- `doctor --json` normally writes its `conferllm.doctor.v1` diagnostic report to stdout, even when it exits 1 for missing, invalid, legacy, or empty configuration. It can exit 0 with permission warnings; inspect the report rather than treating exit 0 as proof of provider access or secure permissions.
+- Argument-parser failures use ordinary usage text on stderr and exit 2, even with `--json`. An interrupted command prints an interruption message and exits 130. Do not assume every nonzero exit contains JSON.
+- MCP failures use protocol tool/resource errors containing the public code and message; do not parse them as CLI stderr envelopes.
+
+## Error codes
+
+Prefer the stable code over parsing prose. Current codes include:
 
 - `invalid_request`
 - `model_not_found`
@@ -34,26 +36,18 @@ error code over parsing prose. Initial codes include:
 - `storage_error`
 - `configuration_error`
 
-Report the code, concise message, model alias or session ID, and safe details.
-Do not open `~/.conferllm/config.yaml` or files under `~/.conferllm/sessions/`.
-Do not print environment variables or provider parameters to diagnose
-authentication failures.
+Report the code, concise message, selected alias or session ID when known, and safe details. Do not open configuration contents or private session storage, including user-selected paths. Do not dump environment variables or provider parameters to diagnose authentication failures.
 
-Useful recovery choices:
+## Recovery boundaries
 
-- Missing executable: follow the installation reference, then verify it.
+- Missing executable: follow [installation and configuration](installation.md), then verify it.
 - Missing configuration: ask the user to create and populate it.
 - Invalid configuration: ask the user to correct its syntax/schema locally.
-- Capability mismatch: choose a declared compatible model or omit images.
-- Session/artifact corruption: fail closed and preserve the files for manual
-  recovery; do not silently rewrite them.
-- Provider error: report it as provider-facing after local validation has
-  passed; do not expose credentials while troubleshooting.
+- Missing alias: inspect `conferllm models --json`; do not silently replace the requested model.
+- Capability or image-limit mismatch: explain the rejected input or replayed-history constraint. Do not silently omit images, drop history, change limits, or switch models.
+- Session/artifact corruption: stop the affected continuation or read, preserve the files, and report the failure. Do not rewrite private storage.
+- Provider error: it can represent an upstream failure or an unsupported response, including remote-only output images or tool calls. Do not assume it is an authentication problem.
 
-Model image limits also account for replayed history, even if the current
-turn attaches no new images. Do not silently drop history to bypass a limit.
+A timeout or interruption does not prove the provider never ran. Do not blindly repeat ambiguous or completed calls; preserve any returned IDs and explain the uncertainty.
 
-A successful response can contain warnings about optional exports or MCP
-inline display. Preserve the committed session ID and turn; retry the artifact
-operation instead of repeating the model call. Unsupported provider tool calls
-or remote-only image outputs fail explicitly instead of becoming empty answers.
+For export or MCP inline-display warnings after success, retain `session.id`, `session.turn`, and the artifact URIs. An MCP client can retry reading an artifact resource without another model call. The CLI has no standalone artifact-read or re-export command; use an already-exported file in an authorized output directory, or report that export recovery is unavailable through the CLI. See [image handling](multimodal.md).
