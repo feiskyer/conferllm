@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, NoReturn
 
+import httpx
 import litellm
 import pytest
 import yaml
@@ -20,11 +21,32 @@ def isolate_user_data_and_providers(
     isolated_home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: isolated_home)
 
+    def isolated_expanduser(path: Path) -> Path:
+        if path.parts and path.parts[0].startswith("~"):
+            if path.parts[0] != "~":
+                raise AssertionError("Named-user home paths must be mocked in tests.")
+            return isolated_home.joinpath(*path.parts[1:])
+        return path
+
+    # Path.expanduser uses os.path.expanduser, not Path.home. Isolate both;
+    # replacing only home() leaves ~/ tool arguments pointing at user files.
+    monkeypatch.setattr(Path, "expanduser", isolated_expanduser)
+    monkeypatch.setattr(
+        "conferllm.chat.DEFAULT_IMAGE_OUTPUT_DIR", tmp_path / "image-exports"
+    )
+    # Spawned test processes must not spend their startup budget fetching
+    # LiteLLM's public price map. Use its bundled map, without network access.
+    monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+    monkeypatch.setattr(litellm, "telemetry", False)
+
     def unmocked_provider(*args: Any, **kwargs: Any) -> NoReturn:
         raise AssertionError("Provider calls must be explicitly mocked in tests.")
 
     monkeypatch.setattr(litellm, "completion", unmocked_provider)
     monkeypatch.setattr(litellm, "acompletion", unmocked_provider)
+    monkeypatch.setattr(litellm, "responses", unmocked_provider)
+    monkeypatch.setattr(litellm, "aresponses", unmocked_provider)
+    monkeypatch.setattr(httpx.Client, "send", unmocked_provider)
 
 
 def create_test_config(models: list[dict[str, Any]]) -> ConferLLMConfig:

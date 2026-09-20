@@ -1,12 +1,14 @@
 # ConferLLM
 
-ConferLLM is a CLI for people and agents to consult AI models, continue conversations, and work with images. Use it to get a second opinion, compare answers across models, or call a model from a script with structured JSON output.
+ConferLLM is a minimalist agent harness with multi-model support and only essential file and shell tools.
 
-It connects to providers through LiteLLM and stores conversations locally. A bundled Agent Skill and an MCP server expose the same conversation features.
+Run models with minimal prompts and tools to get the most out of their capabilities.
+
+Use it as an Agent Skill or MCP server to help Claude Code, Codex, and other agents collaborate across models on complex tasks.
 
 ## Quick start
 
-Requires Python 3.10+. Bring credentials for the provider you want to use.
+Requires Python 3.10+ and API access to a model.
 
 ### 1. Install
 
@@ -26,14 +28,13 @@ If your shell cannot find the uv-installed command, run `uv tool update-shell` a
 
 ### 2. Configure one model
 
-Create a private configuration directory:
+Create the configuration directory:
 
 ```bash
 mkdir -p ~/.conferllm
-chmod 700 ~/.conferllm
 ```
 
-Create `~/.conferllm/config.yaml` with the following content and replace the example API key. If you already have a configuration, add the model without duplicating an existing alias or overwriting your settings.
+Create `~/.conferllm/config.yaml` with the following content and replace the example API key:
 
 ```yaml
 model_list:
@@ -46,11 +47,9 @@ model_list:
       api_key: "replace-with-your-key"
 ```
 
-```bash
-chmod 600 ~/.conferllm/config.yaml
-```
+`model_name` is the alias used in commands. For more models and endpoints, see [config_example.yaml](config_example.yaml).
 
-`model_name` is the alias used in commands; substitute your own if it differs. This example uses OpenAI, and model availability depends on your account. For other providers and local endpoints, see [config_example.yaml](config_example.yaml).
+OpenAI models use Responses by default. For older compatible endpoints, add `api_format: chat_completion` beside `model_name`.
 
 ### 3. Ask a question
 
@@ -96,7 +95,20 @@ conferllm chat \
   --json
 ```
 
-Images are copied into the session so follow-ups can reuse them. For models that return images, `--image-output-dir ./output` exports additional copies. See [image support and limits](docs/reference.md#images).
+Images are copied into the session so follow-ups can reuse them. Generated images are saved to `/tmp` by default; use `--image-output-dir ./output` to choose another directory. Responses replace image data with saved file paths in `message.content`, `message.text`, and output artifacts' `saved_path`. See [image handling](docs/reference.md#images).
+
+### Work with local files and commands
+
+No extra flag or per-model setting is needed:
+
+```bash
+conferllm chat \
+  --model gpt-4o \
+  --prompt "Read README.md and list the files in this directory." \
+  --json
+```
+
+Relative paths use the command's working directory. PowerShell requires an installed `pwsh` or `powershell` executable. See [built-in tools](docs/reference.md#built-in-tools).
 
 ## Use from an agent
 
@@ -106,7 +118,7 @@ Install the bundled Skill into `~/.agents/skills/conferllm`:
 conferllm skill install
 ```
 
-For `~/.codex/skills/conferllm`, use `conferllm skill install --target codex`. Then ask your agent to use the ConferLLM Skill for a second opinion or model comparison. The Skill discovers configured aliases and uses the CLI without opening credential or session files.
+For `~/.codex/skills/conferllm`, use `conferllm skill install --target codex`. Then ask your agent to use ConferLLM to delegate tasks to other models.
 
 See [Skill installation details](docs/reference.md#agent-skill) for custom destinations and updates.
 
@@ -129,7 +141,7 @@ The client launches the server; you do not need to start it separately. If the c
 
 ## Configuration and troubleshooting
 
-Inspect configuration without printing credentials:
+Check configuration and available models:
 
 ```bash
 conferllm doctor --json
@@ -139,15 +151,9 @@ conferllm model-info gpt-4o
 
 Use `--config PATH` with a command to select another configuration file. If a model is not found, use an alias listed by `conferllm models`. See [configuration options](docs/reference.md#configuration) and [troubleshooting](docs/reference.md#troubleshooting).
 
-## Privacy and limits
-
-Prompts, history, and images go to the provider endpoint you configure; a local CLI does not imply offline inference. Sessions and image copies remain under `~/.conferllm/sessions/` by default. Keep them and your credentials out of version control. Stored directories use `0700`; session and image files use `0600`.
-
-Responses are non-streaming. ConferLLM does not execute provider tool calls, download remote-only image outputs, or automatically shorten long histories. See [storage and reliability](docs/reference.md#storage-and-reliability).
-
 ## Development and contributing
 
-Report bugs in [GitHub Issues](https://github.com/feiskyer/mcp-ai-hub/issues); pull requests are welcome too. Include reproduction steps and sanitized output, never credentials or private conversations. See the [source setup and development checks](docs/reference.md#development).
+Report bugs in [GitHub Issues](https://github.com/feiskyer/mcp-ai-hub/issues); pull requests are welcome too. Include reproduction steps and relevant output. See the [source setup and development checks](docs/reference.md#development).
 
 To keep an installed CLI linked to this checkout while editing:
 

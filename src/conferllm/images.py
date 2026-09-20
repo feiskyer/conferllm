@@ -17,7 +17,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 logger = logging.getLogger(__name__)
+MAX_REMOTE_OUTPUT_IMAGE_BYTES = 20 * 1024 * 1024
 
 MIME_EXTENSIONS = {
     "image/png": ".png",
@@ -315,6 +318,70 @@ def image_bytes_to_data_url(data: bytes, mime_type: str) -> str:
     """Encode trusted image bytes for a provider request."""
     encoded = base64.b64encode(data).decode("ascii")
     return f"data:{normalize_image_mime(mime_type)};base64,{encoded}"
+
+
+def replace_provider_images(
+    value: Any, save_image: Callable[[ImagePayload, int], str]
+) -> tuple[Any, list[str]]:
+    """Save visible image blocks and data URLs in their original encounter order."""
+    saved: list[str] = []
+    downloaded: dict[str, ImagePayload] = {}
+
+    def save(payload: ImagePayload, _index: int = 0) -> str:
+        uri = save_image(payload, len(saved))
+        saved.append(uri)
+        return uri
+
+    def remote_image(url: str) -> ImagePayload:
+        if url in downloaded:
+            return downloaded[url]
+        try:
+            # A fresh client carries no model credentials, cookies, or API headers.
+            with (
+                httpx.Client(timeout=30, follow_redirects=True) as client,
+                client.stream("GET", url) as response,
+            ):
+                response.raise_for_status()
+                data = bytearray()
+                for chunk in response.iter_bytes(chunk_size=65536):
+                    data.extend(chunk)
+                    if len(data) > MAX_REMOTE_OUTPUT_IMAGE_BYTES:
+                        raise ValueError("Output image exceeds the download limit.")
+            payload = image_payload_from_bytes(bytes(data))
+        except Exception:
+            # Signed URLs and server error bodies must not enter public errors.
+            raise ImageProcessingError(
+                "Unable to download a valid provider output image within the 20 MiB limit."
+            ) from None
+        downloaded[url] = payload
+        return payload
+
+    def walk(item: Any) -> Any:
+        if isinstance(item, list):
+            return [walk(part) for part in item]
+        if isinstance(item, dict):
+            if item.get("type") == "image_url":
+                image = item.get("image_url")
+                if not isinstance(image, dict) or not isinstance(image.get("url"), str):
+                    raise ImageProcessingError("Invalid provider image URL block.")
+                url = image["url"]
+                if url.startswith("data:"):
+                    target = save(decode_image_data_url(url))
+                elif url.startswith(("http://", "https://")):
+                    target = save(remote_image(url))
+                elif url.startswith("conferllm://"):
+                    target = url  # Validated against turn artifacts later.
+                else:
+                    raise ImageProcessingError(
+                        "Provider images must be data URLs or HTTP(S) URLs."
+                    )
+                return {**item, "image_url": {**image, "url": target}}
+            return {key: walk(part) for key, part in item.items()}
+        if isinstance(item, str):
+            return replace_embedded_image_data(item, save)[0]
+        return copy.deepcopy(item)
+
+    return walk(value), saved
 
 
 def replace_image_refs(

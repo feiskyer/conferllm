@@ -18,11 +18,13 @@ conferllm chat \
 
 Use only files supplied or authorized for the task, and preserve their order. ConferLLM copies accepted inputs into session-owned storage so later turns reuse those copies rather than the original files.
 
-The response contains ordered `message.content` and `artifacts` arrays. `artifacts` describes the current turn and may include both input and output images; select `direction == "output"` when identifying generated images. `message.content` refers to images by `artifact_id`, and each artifact has a `conferllm://sessions/.../artifacts/...` URI. An empty `message.text` is valid for an image-only reply.
+The response contains ordered `message.content` and `artifacts` arrays. `artifacts` describes the current turn and may include both input and output images; select `direction == "output"` when identifying generated images. Image blocks have `type: image_url`, an `artifact_id`, and an absolute saved path in `image_url.url`. `message.text` also contains saved paths in place of image data, including image-only replies. Each artifact retains a `conferllm://sessions/.../artifacts/...` resource URI.
 
-If the user needs viewable local output files, include `--image-output-dir PATH` with the original chat request, choosing a task-authorized output directory outside private session storage. Use the returned `exported_path` when available. CLI JSON may also contain a canonical `local_path`; do not open private session files directly.
+Generated images are automatically saved to `/tmp` when no output directory is provided. Include `--image-output-dir PATH` for a task-authorized, durable location outside private session storage. Use output artifacts' `saved_path`; CLI JSON also retains `exported_path` and canonical `local_path` for compatibility. Do not inspect private session storage directly. If export failed and `saved_path` points into private storage, report the warning and use an MCP resource read rather than opening that private file.
 
-There may be zero, one, or many generated images, depending on the model and response. Output images must be embedded data URLs; remote-only image outputs and unsupported provider tool calls fail explicitly.
+There may be zero, one, or many generated images, depending on the model and response. All candidates and supported content blocks are processed. Embedded data URLs, base64 blocks, native image-generation items, and HTTP(S) image outputs are saved; remote downloads are bounded and do not receive provider credentials. Native tool calls execute automatically, and images produced across tool rounds receive distinct artifact IDs. Tool argument strings and encrypted reasoning are not treated as image output.
+
+Image generation success does not imply reliable instruction following or tool use. An image model may return another image even when a follow-up requests text; inspect the actual content types and report what it returned.
 
 An export warning does not undo the committed chat or remove its canonical artifacts. Do not repeat the model call to repair an export. The CLI has no standalone artifact-read or re-export command; use an available MCP artifact resource, or report the warning and preserved IDs. See [recovery boundaries](errors.md).
 
@@ -38,6 +40,8 @@ conferllm chat \
   --json
 ```
 
+Responses history conversion preserves assistant text phases and supplies generated images as image inputs explicitly attributed to the assistant. This conversion is automatic; do not rebuild the history or reattach old images just to change the API format.
+
 Repeated `--image` values on a continuation are new images for that turn. Never reconstruct history or read JSONL session files. A model's declared image limit also counts input and output images replayed from earlier turns, even when the new turn attaches no images. If a limit is reached, explain it; start a new session only when a fresh context fits the user's intent. Do not silently discard history or switch model aliases.
 
 Application image limits apply to newly attached images. Use `conferllm model-info MODEL` to inspect declared capabilities and effective limits. Do not send images when the declared `input_modalities` excludes `image`; missing capability metadata is not proof of image support.
@@ -46,7 +50,7 @@ Application image limits apply to newly attached images. Use `conferllm model-in
 
 The CLI's `--image` accepts local file paths. MCP image arguments instead accept data URLs or absolute paths on the server's filesystem; a relative path on the client is not a valid MCP image argument.
 
-MCP returns the chat envelope in structured content and its first text block, followed by inline output images or resource links. It omits CLI filesystem fields such as `local_path` and `exported_path`. Read returned artifact URIs through the MCP client's resource interface, not as filesystem paths or HTTP download URLs.
+MCP returns the chat envelope in structured content and its first text block, followed by resource links. Images are not inlined as base64. `saved_path` and image content paths refer to the server host; a remote client should read the artifact URI through MCP when it cannot access that filesystem. Canonical `local_path` and compatibility `exported_path` fields remain omitted from MCP artifact metadata.
 
 ## Compare models
 

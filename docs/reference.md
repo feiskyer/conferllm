@@ -44,7 +44,30 @@ Replace placeholder credentials for the models you want to use and remove unused
 
 Each `model_name` must be non-empty and unique. It is the local alias passed to `--model`, not necessarily the provider's model ID. `litellm_params.model` is required and identifies the provider model.
 
-Parameters in `litellm_params` are forwarded to LiteLLM. ConferLLM owns `messages` and always sets `stream` to `false`; a configured `messages` field is rejected. Unknown application configuration fields are also rejected.
+Parameters in `litellm_params` are forwarded to LiteLLM, with format-specific mapping for Responses. ConferLLM owns `messages`/`input` and always sets `stream=false`, its built-in `tools`, and `tool_choice=auto`; configured message/input payloads are rejected. Legacy `functions`/`function_call` parameters are ignored, `drop_params` is forced off, and `additional_drop_params` cannot remove `tools` or `tool_choice`. Unknown application configuration fields are also rejected.
+
+Each model has an `api_format` field accepting exactly `responses` (the default) or `chat_completion`. This setting selects the transport only for the `openai` provider, including custom endpoints configured as `openai/MODEL`; other providers retain their existing integration. Set it beside `model_name`, not inside `litellm_params`. `model-info` reports the configured value and `uses_responses_api`.
+
+```yaml
+model_list:
+  - model_name: gpt-6-astra
+    api_format: responses
+    litellm_params:
+      model: openai/gpt-6-astra
+      api_key: "replace-with-your-key"
+  - model_name: legacy-chat
+    api_format: chat_completion
+    litellm_params:
+      model: openai/your-legacy-model
+      api_base: "https://your-endpoint.example/v1"
+      api_key: "replace-with-your-key"
+```
+
+Responses sends flat function definitions and typed `input` items. It preserves native function `call_id` values and all returned reasoning items when replaying tool results; it does not substitute the separate output-item `id`. Local conversation state is used with `store=false` by default and encrypted reasoning requested. Tool schemas explicitly use `strict=false` to preserve existing optional/default parameters, while local argument validation remains enabled. `max_tokens`/`max_completion_tokens` map to `max_output_tokens`, `reasoning_effort` maps to `reasoning`, and `response_format` maps to `text.format`. Chat-only parameters such as `stop`, `logprobs`, or `n>1` produce an explicit configuration error; select `chat_completion` when the endpoint requires that protocol. There is no automatic protocol downgrade.
+
+Replayed assistant text uses `output_text`, with its original `phase` retained; user/system/developer text uses `input_text`. Optional message/function output-item IDs are not echoed, avoiding oversized IDs returned by some compatible endpoints. Required reasoning state remains intact. Generated images are supplied as separate image inputs explicitly attributed to the assistant, since assistant output messages do not accept `input_image`. Their order and the original internal history are preserved.
+
+GPT-6 Astra requires Responses for tool calling. See the official [function-calling guide](https://developers.openai.com/api/docs/guides/function-calling) and [Responses migration guide](https://developers.openai.com/api/docs/guides/migrate-to-responses) for the protocol differences.
 
 Optional settings:
 
@@ -79,7 +102,9 @@ Request `--json` for scripts and agents. The stable chat response envelope is `c
 }
 ```
 
-The session ID above is illustrative; continue with the ID returned by your own call. Compatibility fields `session_id`, `name`, `model`, and `answer` are also returned. New integrations should use the nested fields. Raw provider data is excluded unless `--include-raw-response` is supplied.
+The session ID above is illustrative; continue with the ID returned by your own call. Compatibility fields `session_id`, `name`, `model`, and `answer` are also returned. New integrations should use the nested fields. Raw provider data is excluded unless `--include-raw-response` is supplied; when included, image payloads are replaced by saved paths. All Chat Completions choices and all Responses output items are processed, rather than only the first candidate. Text and images retain their order within a response, and every valid tool call is executed in returned order. Duplicate call IDs are rejected before executing the batch.
+
+For completion integrations, an in-memory, per-request capture preserves native output fields before SDK convenience conversion. Gemini candidates are converted independently so a text-only candidate cannot inherit another candidate's tool calls, images, or reasoning. Interleaved Gemini text/image parts retain their order. A complete Chat Completions response with content arrays can be recovered if the SDK rejects its string-only content field; upstream errors and incomplete responses are not recovered this way. Request bodies and credentials are not retained by this capture.
 
 Successful JSON results go to stdout. Runtime failures exit nonzero and write a `conferllm.error.v1` envelope to stderr. Library logging is suppressed in JSON mode so it does not contaminate the envelope. Argument-parser failures use the normal CLI usage error and exit code 2.
 
@@ -97,7 +122,33 @@ Filters combine with AND semantics. `--query` matches the ID or name without cas
 
 `--json` returns a `conferllm.sessions.response.v1` object with `sessions` and `warnings` arrays.
 
-For chat commands, exactly one of `--model` and `--session` is required. A session retains its model and name; `--name` is only accepted for a new chat. Prior successful turns are restored automatically. Compare models by creating independent sessions with the same prompt and attributing each answer.
+For chat commands, exactly one of `--model` and `--session` is required. A session retains its model and name; `--name` is only accepted for a new chat. Prior successful turns, including tool calls and results, are restored automatically without executing old calls again. Compare models by creating independent sessions with the same prompt and attributing each answer.
+
+## Built-in tools
+
+All configured models receive the same native function definitions on every request. There is no opt-in flag, model allowlist, approval prompt, sandbox, command classifier, or read-before-write gate. Tools run on the ConferLLM host using its OS user's access, including for chats invoked through MCP. A read-only prompt is guidance to the model, not an enforced boundary.
+
+| Tools | Operations |
+| --- | --- |
+| `run_shell`, `git_command` | Noninteractive bash/sh or Git commands, with an optional working directory and timeout |
+| `run_powershell` | Noninteractive commands through installed `pwsh`, `powershell`, or `powershell.exe` |
+| `shell_output`, `shell_kill` | Read new output/status or stop an owned background command |
+| `read_file`, `list_directory` | Read line-numbered UTF-8 text or list entries with filename glob exclusions |
+| `write_file`, `append_file`, `edit_file` | Create/overwrite, append, or perform exact string replacements |
+
+The provider must support native function calling: Responses uses `function_call` / `function_call_output`; Chat Completions uses `tool_calls` / tool messages. Typed native content blocks such as `tool_use` are also normalized. ConferLLM does not interpret tool-shaped ordinary text or use a text-protocol fallback. LiteLLM's legacy `ollama/` route is mapped to `ollama_chat/` for the same model so Ollama uses native calling. An unsupported provider produces an explicit error rather than silently omitting tools.
+
+Tool batches execute in order. Each result is returned with the original `tool_call_id`; invalid arguments, missing executables/files, and command failures become error results that the model can correct. Invalid protocol envelopes and duplicate call IDs fail the turn before executing that batch. A turn permits up to 32 tool rounds, then one final model response; another requested tool round fails with `tool_call_limit_exceeded`.
+
+Relative paths resolve against the invocation's working directory. Shell tools accept `cwd` without changing the server's process-wide directory. Commands have no interactive stdin; foreground timeouts default to 120 seconds (60 for Git) and accept 1–600 seconds. Shell output retains at most 30,000 unread bytes plus a truncation notice.
+
+Background processes and their handles belong to the current chat invocation only. Use `shell_output`/`shell_kill` before the model finishes. Completion, failure, and interruption stop owned process groups and join output readers. A successful turn reports a warning if a background command was still running and had to be stopped. Handles cannot be reused in another session or a later CLI invocation. PowerShell is not installed automatically; the package's existing POSIX platform requirement still applies.
+
+MCP cancellation signals the worker and its subprocesses, and prevents a late provider response from starting more tools. An in-flight blocking provider HTTP request may still complete; cancellation is not proof that it was never billed. A file operation already in progress may finish before cancellation is observed.
+
+File tools handle UTF-8 files up to 10 MiB. Reads default to 2,000 lines and support a 1-based `offset` and `limit`; line-number prefixes are display-only. Listings default to 1,000 entries. Text output/diffs are capped at 30,000 characters. Writes create parent directories, follow symlink targets, preserve existing modes and dominant line endings, and replace files atomically; newly created files use a private mode. `edit_file` requires a unique exact match unless `replace_all=true`; an empty `old_string` creates only a new/empty file. It does not apply unified diffs.
+
+These are reliability limits, not permission controls. Tool results can contain file contents, command output, or host paths and are sent to the model. Commands and file changes are not part of the session-storage transaction and cannot be rolled back by ConferLLM.
 
 ## Images
 
@@ -105,11 +156,11 @@ Repeat `--image` to preserve input order. Accepted images are copied into privat
 
 Declared capabilities are checked before reading images or calling the provider. Application limits bound new attachments; a model's `max_input_images` also counts images replayed from history. Unknown image capability produces a warning, not a claim of provider support.
 
-Models that return images can produce multiple ordered output artifacts, including image-only replies. `message.content` contains their references and `artifacts` contains their MIME type, size, SHA-256, local path, and stable `conferllm://sessions/.../artifacts/...` URI. Local paths are included in CLI responses, not exposed through MCP results.
+Models can return multiple images, text/image mixtures, and tool calls in the same response. Every image is saved. Public `message.content` uses `image_url` blocks whose `image_url.url` is the saved absolute filesystem path, retaining `artifact_id`; `message.text` substitutes the same paths for images and separates otherwise adjacent paths/text with newlines. Output artifacts expose `saved_path`, MIME type, size, SHA-256, and a stable `conferllm://sessions/.../artifacts/...` URI. These are paths on the CLI/server host, not on a remote MCP client's machine.
 
-Use `--image-output-dir PATH` for additional exported copies. If export fails, the canonical artifacts and successful conversation remain available. Keep the session ID and handle the warning rather than repeating the model call.
+With no `image_output_dir` / `--image-output-dir`, images are exported to `/tmp`. Specify a directory for a durable or project-specific location. Immutable canonical copies remain in private session storage and internal history uses artifact references, so follow-ups survive deletion of temporary exports. If an export fails, the returned path falls back to the canonical copy and a warning explains the failure; do not repeat a successful model call to repair an export.
 
-Generated images must be embedded data URLs. ConferLLM does not download remote-only image outputs, execute provider tool calls, or silently discard unsupported content.
+Supported image outputs include embedded data URLs, common base64 image blocks, Responses image-generation items, and HTTP(S) image URLs. Remote image downloads use a fresh client without provider credentials and are limited to 20 MiB per image. Arbitrary provider-supplied local paths are not read as image outputs. Images from every candidate and tool round get distinct artifact IDs. Tool argument strings and encrypted reasoning are not scanned or rewritten as image output; unsupported typed blocks fail explicitly instead of disappearing.
 
 ## Agent Skill
 
@@ -166,15 +217,15 @@ Available tools:
 - `list_sessions(query, model, since, until, limit)` finds session metadata; all filters are optional.
 - `chat(...)` is a compatibility wrapper. Prefer the separate create/continue tools in new integrations.
 
-Chat results include the JSON envelope as both structured content and the first text content block. MCP image inputs must be data URLs or absolute paths on the server's filesystem, not relative paths on the client's machine. Generated images may be returned inline or through `conferllm://sessions/{session_id}/artifacts/{artifact_id}` resources.
+Chat results include the JSON envelope as both structured content and the first text content block. MCP image inputs must be data URLs or absolute paths on the server's filesystem, not relative paths on the client's machine. Generated images are returned as saved host paths in the envelope, plus resource links for remote access. MCP no longer inlines generated image base64. The `conferllm://sessions/{session_id}/artifacts/{artifact_id}` resource still provides canonical image bytes on an explicit read.
 
 ## Storage and reliability
 
-Sessions are UTF-8 JSONL files below `~/.conferllm/sessions/YYYY/MM/DD/`. Every committed turn contains a complete user/assistant pair and its artifact metadata. Directories use `0700`; session and image files use `0600`. The configuration file remains user-managed.
+Sessions are UTF-8 JSONL files below `~/.conferllm/sessions/YYYY/MM/DD/`. Every committed turn contains a user message, final assistant answer, optional ordered `tool_messages`, and its artifact metadata. Existing v1/v2 sessions remain readable; tool transcripts are an additive field. Replay validates call/result pairing. Turn usage totals include all model calls, while optional raw response data represents the last provider response. Directories use `0700`; session and image files use `0600`. The configuration file remains user-managed.
 
-Continuation holds a thread/process lock across loading, model execution, and atomic JSONL replacement. Stored image size/hash checks precede replay. Failed provider calls do not append a partial turn.
+Continuation holds a thread/process lock across loading, model/tool execution, and atomic JSONL replacement. Stored image size/hash checks precede replay. Failed provider calls do not append a partial turn, but commands and file edits that already ran remain in effect. Errors after tool attempts include `tool_calls_attempted`, `side_effects_may_remain`, and the attempted session/turn. A new session ID in a failure is not proof that its JSONL was committed.
 
-JSONL is the commit record. A locked continuation can recover the next uncommitted image directory left by a crash; it never removes committed turns. Early staging leftovers are not automatically swept. This is not an exactly-once guarantee for provider calls. Long histories are not silently summarized or truncated.
+JSONL is the commit record. A locked continuation can recover the next uncommitted image directory left by a crash; it never removes committed turns. Early staging leftovers are not automatically swept. This is not an exactly-once guarantee for provider or tool execution. A crash can leave external side effects without a committed transcript; do not blindly repeat a failed request. Long histories are not silently summarized or truncated.
 
 Session content can be sensitive. Keep credentials and conversations out of version control. Configuration/provider errors do not echo raw input or provider exception payloads.
 
@@ -193,7 +244,9 @@ Doctor reports safe metadata and suggested next steps. It exits nonzero when con
 - **Command not found:** for uv tool installs, run `uv tool update-shell` and reopen the terminal. MCP clients may need an absolute executable path.
 - **Model not found:** use an alias from `conferllm models`, or add the alias to your configuration. A provider model ID is not automatically a local alias.
 - **Configuration error:** check the path, YAML syntax, and field names locally. Keep aliases unique and supply `litellm_params.model` for each.
-- **Provider error:** check your account's model access, endpoint, and credentials. A successful configuration check does not test provider connectivity.
+- **Provider error:** check your account's model access, endpoint, credentials, and native tool-calling support. A successful configuration check does not test provider connectivity.
+- **Tool-round limit:** inspect the task's scope and any reported side effects before submitting another request. Repeating it can repeat file changes or commands.
+- **PowerShell missing:** install PowerShell separately if needed; ConferLLM returns the missing-executable error to the model and does not change the host configuration.
 - **Image export warning after success:** the conversation is already saved; retain its session ID instead of making the same provider call again.
 
 ## Development
@@ -223,4 +276,4 @@ uv tool install --editable . --force
 
 The tool environment is separate from the development environment. Python source changes take effect on the next invocation; running servers need a restart. Reinstall after changing dependencies or command entry points.
 
-Dependency major versions are bounded, and `uv.lock` records the development resolution. Python 3.10 uses LiteLLM 1.97.x; Python 3.11+ permits LiteLLM 1.x from 1.99.0. The project enables uv's centralized environments to avoid hidden `.pth` problems in synced macOS folders.
+Dependency major versions are bounded, and `uv.lock` records the development resolution. Python 3.10 uses LiteLLM 1.97.x with a guarded response-type rebuild for its nested forward-reference regression; Python 3.11+ permits LiteLLM 1.x from 1.99.0. The project enables uv's centralized environments to avoid hidden `.pth` problems in synced macOS folders. Session-only imports do not load the provider SDK, keeping spawned lock workers independent of provider initialization.

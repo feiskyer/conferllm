@@ -2,6 +2,8 @@
 
 import copy
 import logging
+import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -9,11 +11,39 @@ from typing import Any, cast
 import litellm
 from litellm.types.utils import ModelResponse
 
+from .completions import CompletionCapture
 from .config import ConferLLMConfig, ModelConfig
 from .errors import ConferLLMError
 from .images import image_bytes_to_data_url, image_payload_from_bytes
+from .responses import (
+    messages_to_input,
+    strip_response_state,
+    to_model_response,
+)
+from .responses import (
+    prepare_params as prepare_responses_params,
+)
+from .tools import tool_definitions
 
 logger = logging.getLogger(__name__)
+_RESPONSE_TYPES_LOCK = threading.Lock()
+
+
+def _prepare_response_types() -> None:
+    """Resolve LiteLLM 1.97's nested forward references on Python 3.10."""
+    if sys.version_info >= (3, 11):
+        return
+    # https://github.com/BerriAI/litellm/issues/36384
+    # Supply the defining namespaces rather than changing SDK annotations.
+    # Healthy/fixed model classes require no rebuild.
+    from litellm.types import utils
+    from litellm.types.llms import openai
+
+    with _RESPONSE_TYPES_LOCK:
+        namespace = {**vars(openai), **vars(utils)}
+        for response_type in (utils.Message, utils.Delta):
+            if not response_type.__pydantic_complete__:
+                response_type.model_rebuild(_types_namespace=namespace)
 
 
 class ModelNotFoundError(ValueError):
@@ -57,9 +87,13 @@ class LLMClient:
 
     def __init__(self, config: ConferLLMConfig):
         """Initialize AI client with configuration."""
+        _prepare_response_types()
         self.config = config
         # Set LiteLM to suppress output
         litellm.suppress_debug_info = True
+        # Do not silently drop tools or replace native calling with prompt text.
+        litellm.drop_params = False
+        litellm.add_function_to_prompt = False
 
     def chat(self, model_name: str, messages: list[dict[str, Any]]) -> ModelResponse:
         """Chat with specified AI model.
@@ -88,7 +122,8 @@ class LLMClient:
                        ]}]
 
         Returns:
-            Raw LiteLM ModelResponse object containing all response data
+            Raw LiteLLM response from one provider request. Built-in tool schemas
+            are always supplied; ChatService owns tool execution and follow-ups.
 
         Raises:
             ValueError: If model is not configured or messages format is invalid
@@ -124,18 +159,61 @@ class LLMClient:
 
             # Make the API call using LiteLM (ensure non-streaming)
             litellm_params = {
-                k: v for k, v in model_config.litellm_params.items() if k != "model"
+                k: copy.deepcopy(v)
+                for k, v in model_config.litellm_params.items()
+                if k not in {"model", "functions", "function_call"}
             }
             litellm_params["stream"] = False  # Explicitly disable streaming
+            litellm_params["tools"] = tool_definitions()
+            litellm_params["tool_choice"] = "auto"
+            litellm_params["drop_params"] = False
+            if isinstance(litellm_params.get("additional_drop_params"), list):
+                litellm_params["additional_drop_params"] = [
+                    name
+                    for name in litellm_params["additional_drop_params"]
+                    if name not in {"tools", "tool_choice"}
+                ]
+            # LiteLLM's legacy ollama route emulates functions in the prompt.
+            # Use its native chat route for the same configured Ollama model.
+            if litellm_model.startswith("ollama/"):
+                litellm_model = "ollama_chat/" + litellm_model.removeprefix("ollama/")
+            if litellm_params.get("custom_llm_provider") == "ollama":
+                litellm_params["custom_llm_provider"] = "ollama_chat"
 
-            response = litellm.completion(
-                model=litellm_model, messages=prepared_messages, **litellm_params
-            )
+            if self._is_openai_provider(model_config):
+                if model_config.api_format == "responses":
+                    native = litellm.responses(
+                        model=litellm_model,
+                        input=messages_to_input(prepared_messages),
+                        **prepare_responses_params(litellm_params, tool_definitions()),
+                    )
+                    return to_model_response(native.model_dump(exclude_none=True))
+                # Honor an explicit legacy selection even when LiteLLM's model
+                # catalog would otherwise auto-bridge a model to Responses.
+                litellm_params["_skip_responses_api_bridge"] = True
+            capture = CompletionCapture(litellm_params.get("logger_fn"))
+            litellm_params["logger_fn"] = capture
+            try:
+                response = litellm.completion(
+                    model=litellm_model,
+                    messages=strip_response_state(prepared_messages),
+                    **litellm_params,
+                )
+            except Exception:
+                # Some compatible endpoints return typed content arrays while
+                # the SDK's completion Message requires str | None. Recover only
+                # an observed, complete native response; never retry the request.
+                recovered = capture.recover_content_arrays()
+                if recovered is None:
+                    raise
+                response = recovered
 
             # Return the raw ModelResponse object
             # Cast to ModelResponse since LiteLLM can return a union type but we disable streaming
-            return cast(ModelResponse, response)
+            return capture.restore(cast(ModelResponse, response), litellm_params)
 
+        except ConferLLMError:
+            raise
         except Exception as error:
             # Provider errors may contain request bodies, credentials, or signed
             # URLs. Preserve the failure category, never the provider's text.
@@ -144,9 +222,24 @@ class LLMClient:
             raise ConferLLMError(
                 "provider_error",
                 f"Failed to get response from {model_name}. "
-                "Check provider availability, credentials, and model parameters.",
+                "Check provider availability, credentials, and model parameters. "
+                "The provider must support native tool calling; tools are always enabled.",
                 details={"exception_type": error_type},
             ) from None
+
+    @staticmethod
+    def _is_openai_provider(model_config: ModelConfig) -> bool:
+        params = model_config.litellm_params
+        explicit = params.get("custom_llm_provider")
+        if explicit is not None:
+            return bool(explicit == "openai")
+        model = str(params["model"])
+        if "/" in model:
+            return model.split("/", 1)[0] == "openai"
+        try:
+            return bool(litellm.get_llm_provider(model=model)[1] == "openai")
+        except Exception:
+            return False
 
     def _is_local_path(self, url: str) -> bool:
         """Check if a URL is a local file path.
@@ -384,6 +477,11 @@ class LLMClient:
         return {
             "model_name": model_config.model_name,
             "provider_model": model_config.litellm_params.get("model"),
+            "api_format": model_config.api_format,
+            "uses_responses_api": (
+                self._is_openai_provider(model_config)
+                and model_config.api_format == "responses"
+            ),
             "configured_params": list(model_config.litellm_params.keys()),
             "has_model_system_prompt": model_config.system_prompt is not None,
             "uses_global_system_prompt": (

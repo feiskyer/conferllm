@@ -41,6 +41,7 @@ model_list:
   # ============================================================================
 
   - model_name: gpt-4o  # Friendly name for MCP tools
+    api_format: responses  # Default for the openai provider
     # Model-specific system prompt (overrides global_system_prompt for this model only)
     system_prompt: "You are a helpful multimodal assistant."
     # Optional non-secret metadata used for validation before provider calls.
@@ -64,6 +65,7 @@ model_list:
       # stop: ["\n\n", "Human:"]  # Stop sequences
 
   - model_name: gpt-5
+    api_format: responses
     capabilities:
       input_modalities: [text]
       output_modalities: [text]
@@ -71,7 +73,7 @@ model_list:
       model: openai/gpt-5
       api_key: "sk-your-openai-api-key-here"  # REPLACE WITH YOUR KEY
       max_tokens: 4096  # Higher token limit for longer responses
-      temperature: 0.7
+      # Reasoning models may reject sampling parameters; use their defaults.
 
   # ============================================================================
   # ANTHROPIC MODELS
@@ -196,6 +198,7 @@ model_list:
 
 # Example: Local LLM server (Ollama, LM Studio, vLLM, etc.)
 # - model_name: local-llama
+#   api_format: chat_completion  # For servers without /responses
 #   litellm_params:
 #     # Local servers often use OpenAI-compatible format
 #     model: openai/llama-2-7b-chat

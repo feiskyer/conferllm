@@ -31,6 +31,7 @@ def mock_config():
     config.model_list = [
         ModelConfig(
             model_name="test-model",
+            api_format="chat_completion",
             litellm_params={"model": "openai/gpt-4-vision-preview"},
         )
     ]

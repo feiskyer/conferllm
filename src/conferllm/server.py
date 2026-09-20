@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 from datetime import date
 from pathlib import Path
+from threading import Event
 from typing import Any, Literal, NoReturn
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ResourceError, ToolError
-from mcp.types import CallToolResult, ImageContent, ResourceLink, TextContent
+from mcp.types import CallToolResult, ResourceLink, TextContent
 
 from . import __version__
 from .chat import ChatResult, ChatService
@@ -25,6 +25,7 @@ from .images import (
     process_response_for_images,
 )
 from .session import SessionStore
+from .tools.common import cancellation_scope
 
 logger = logging.getLogger(__name__)
 
@@ -99,44 +100,22 @@ def _validate_mcp_images(images: list[str] | None) -> None:
 
 def _chat_tool_result(
     result: ChatResult,
-    store: SessionStore,
+    _store: SessionStore,
 ) -> CallToolResult:
     structured = _without_server_paths(result.to_dict(include_local_paths=False))
     content: list[Any] = []
 
-    session_id = result.session_id
     for artifact in _output_artifacts(result):
-        artifact_id = artifact["id"]
-        mime_type = artifact["mime_type"]
-        size = artifact["size_bytes"]
-        data: bytes | None = None
-        if size <= INLINE_IMAGE_LIMIT_BYTES:
-            try:
-                data = store.read_artifact(session_id, artifact_id)
-            except (OSError, ValueError):
-                # The chat has committed. An optional inline rendering failure
-                # must not make a caller retry a successful, billable turn.
-                structured["warnings"].append(
-                    f"Unable to inline artifact '{artifact_id}'; "
-                    "use its resource URI to retry reading it."
-                )
-
-        if data is not None and len(data) <= INLINE_IMAGE_LIMIT_BYTES:
-            content.append(
-                ImageContent(
-                    data=base64.b64encode(data).decode("ascii"),
-                    mime_type=mime_type,
-                )
+        # Images are represented by saved paths in the JSON envelope. Retain a
+        # resource link for remote clients, but never inline the image payload.
+        content.append(
+            ResourceLink(
+                name=artifact["id"],
+                uri=artifact["uri"],
+                mime_type=artifact["mime_type"],
+                size=artifact["size_bytes"],
             )
-        else:
-            content.append(
-                ResourceLink(
-                    name=artifact_id,
-                    uri=artifact["uri"],
-                    mime_type=mime_type,
-                    size=size,
-                )
-            )
+        )
 
     # Text-only MCP clients must also receive the ID needed for continuation.
     content.insert(
@@ -164,7 +143,8 @@ def create_mcp_server(
     server: MCPServer[None] = MCPServer(
         "conferllm",
         title="ConferLLM",
-        description="Use locally configured AI models through persistent chats.",
+        description="Persistent model chats with built-in host shell and file tools "
+        "enabled, without approval prompts or a sandbox.",
         version=__version__,
         log_level=log_level,
     )
@@ -216,19 +196,24 @@ def create_mcp_server(
         except Exception as error:
             _raise_public_error(error)
         output_dir = image_output_dir if image_output_dir is not None else image_path
+        cancelled = Event()
         try:
             service = require_chat_service()
-            result = await asyncio.to_thread(
-                service.chat,
-                message,
-                model=model,
-                session_id=session_id,
-                name=name,
-                images=images,
-                image_output_dir=output_dir,
-                include_raw_response=include_raw_response,
-            )
+            with cancellation_scope(cancelled):
+                result = await asyncio.to_thread(
+                    service.chat,
+                    message,
+                    model=model,
+                    session_id=session_id,
+                    name=name,
+                    images=images,
+                    image_output_dir=output_dir,
+                    include_raw_response=include_raw_response,
+                )
             return await asyncio.to_thread(_chat_tool_result, result, require_store())
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
         except Exception as error:
             _raise_public_error(error)
 
@@ -241,10 +226,11 @@ def create_mcp_server(
         image_output_dir: str | None = None,
         include_raw_response: bool = False,
     ) -> CallToolResult:
-        """Create a persistent chat using one configured model.
+        """Create a persistent chat with host shell and file tools enabled.
 
         ``images`` preserves input order and accepts server-local absolute paths
         or image data URLs. The result includes a reusable session ID.
+        Model tool calls execute on the server host without approval prompts.
         """
         return await execute_chat(
             message=message,
@@ -263,7 +249,7 @@ def create_mcp_server(
         image_output_dir: str | None = None,
         include_raw_response: bool = False,
     ) -> CallToolResult:
-        """Continue a persistent chat; ConferLLM loads its stored history."""
+        """Continue with stored history and enabled host shell/file tools."""
         return await execute_chat(
             message=message,
             session_id=session_id,
@@ -283,7 +269,7 @@ def create_mcp_server(
         image_path: str | None = None,
         include_raw_response: bool = False,
     ) -> CallToolResult:
-        """Create or continue a named chat with a configured model.
+        """Chat with a configured model and enabled host shell and file tools.
 
         Supply ``model`` for the first message or ``session_id`` to continue.
         New integrations should use ``create_chat`` or ``continue_chat``.

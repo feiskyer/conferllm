@@ -342,8 +342,8 @@ def test_missing_image_is_rejected_before_provider_call(tmp_path: Path) -> None:
     client.chat.assert_not_called()
 
 
-def test_generated_image_defaults_to_session_assets(tmp_path: Path) -> None:
-    """Persist multiple generated images as ordered session artifacts."""
+def test_generated_image_keeps_session_assets_and_exports_paths(tmp_path: Path) -> None:
+    """Persist images for replay and return default-directory copies as paths."""
     image_bytes = PNG_BYTES
     data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
     client = make_client()
@@ -365,9 +365,9 @@ def test_generated_image_defaults_to_session_assets(tmp_path: Path) -> None:
     ]
     assert [item["type"] for item in result.content] == [
         "text",
-        "image_ref",
+        "image_url",
         "text",
-        "image_ref",
+        "image_url",
     ]
     assert result.response is not None
     assert data_url not in str(result.response)

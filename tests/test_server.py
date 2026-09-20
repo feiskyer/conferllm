@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
-from mcp.types import ImageContent, ResourceLink, TextContent
+from mcp.types import ResourceLink, TextContent
 
 from conferllm.config import ConferLLMConfig, ModelConfig
 from conferllm.server import (
@@ -39,6 +39,10 @@ class ContractChatResult:
         artifacts = []
         for artifact in self.artifacts:
             serialized = dict(artifact)
+            if artifact.get("direction") == "output":
+                serialized["saved_path"] = artifact.get(
+                    "exported_path"
+                ) or artifact.get("local_path")
             if not include_local_paths:
                 serialized.pop("local_path", None)
             artifacts.append(serialized)
@@ -335,8 +339,8 @@ class TestMCPIntegration:
         }
 
     @pytest.mark.asyncio
-    async def test_chat_returns_ordered_inline_and_linked_images(self) -> None:
-        """Inline small images and link large images without local paths."""
+    async def test_chat_returns_ordered_image_paths_and_resource_links(self) -> None:
+        """Return saved paths for all images without inline base64 payloads."""
         small = b"\x89PNG\r\n\x1a\nsmall"
         artifacts = [
             {
@@ -369,17 +373,21 @@ class TestMCPIntegration:
             )
 
         assert isinstance(result.content[0], TextContent)
-        assert isinstance(result.content[1], ImageContent)
-        assert base64.b64decode(result.content[1].data) == small
+        assert isinstance(result.content[1], ResourceLink)
         assert result.content[1].mime_type == "image/png"
         assert isinstance(result.content[2], ResourceLink)
         assert result.content[2].uri == artifacts[1]["uri"]
         assert "local_path" not in result.structured_content["artifacts"][0]
         assert "local_path" not in result.structured_content["artifacts"][1]
-        store.read_artifact.assert_called_once_with(
-            SESSION_ID,
-            "t0001-output-001",
+        assert (
+            result.structured_content["artifacts"][0]["saved_path"]
+            == "/private/server/small.png"
         )
+        assert (
+            result.structured_content["artifacts"][1]["saved_path"]
+            == "/private/server/large.jpg"
+        )
+        store.read_artifact.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_artifact_resource_reads_session_owned_bytes(self) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import zipfile
 from configparser import ConfigParser
@@ -10,6 +11,27 @@ from email.parser import Parser
 from pathlib import Path
 
 import pytest
+
+
+def test_public_exports_and_session_import_do_not_load_provider_sdk() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys, conferllm; "
+            "from conferllm import SessionStore; "
+            "assert 'litellm' not in sys.modules; "
+            "assert SessionStore.__module__ == 'conferllm.session'; "
+            "assert set(conferllm.__all__) <= set(dir(conferllm)); "
+            "assert not hasattr(conferllm, 'missing_export'); "
+            "assert all(getattr(conferllm, name) is not None for name in conferllm.__all__)",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_wheel_contains_complete_version_matched_skill(tmp_path: Path) -> None:
@@ -44,6 +66,14 @@ def test_wheel_contains_complete_version_matched_skill(tmp_path: Path) -> None:
             "conferllm/__init__.py",
             "conferllm/__main__.py",
             "conferllm/py.typed",
+            "conferllm/tool_protocol.py",
+            "conferllm/responses.py",
+            "conferllm/outputs.py",
+            "conferllm/tools/__init__.py",
+            "conferllm/tools/common.py",
+            "conferllm/tools/file.py",
+            "conferllm/tools/shell.py",
+            "conferllm/tools/powershell.py",
             "conferllm/skill/SKILL.md",
             "conferllm/skill/agents/openai.yaml",
             "conferllm/skill/references/installation.md",

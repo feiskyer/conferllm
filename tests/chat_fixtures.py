@@ -32,6 +32,7 @@ def configured_client(root: Path) -> LLMClient:
             model_list=[
                 ModelConfig(
                     model_name="vision",
+                    api_format="chat_completion",
                     litellm_params={"model": "openai/review-fixture"},
                     capabilities=ModelCapabilities(
                         input_modalities=["text", "image"],

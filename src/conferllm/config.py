@@ -86,6 +86,7 @@ class ModelConfig(BaseModel):
 
     model_name: str
     litellm_params: dict[str, Any]
+    api_format: Literal["responses", "chat_completion"] = "responses"
     system_prompt: str | None = None  # Optional system prompt for this model
     capabilities: ModelCapabilities | None = None
 
@@ -104,8 +105,11 @@ class ModelConfig(BaseModel):
         model = value.get("model")
         if not isinstance(model, str) or not model.strip():
             raise ValueError("litellm_params.model must be a non-empty string.")
-        if "messages" in value:
-            raise ValueError("litellm_params.messages is managed by ConferLLM.")
+        for field in ("messages", "input"):
+            if field in value:
+                raise ValueError(f"litellm_params.{field} is managed by ConferLLM.")
+        if "api_format" in value:
+            raise ValueError("Set api_format on the model, not inside litellm_params.")
         return value
 
 

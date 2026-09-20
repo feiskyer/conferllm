@@ -33,6 +33,8 @@ Prefer the stable code over parsing prose. Current codes include:
 - `session_corrupt`
 - `artifact_not_found`
 - `provider_error`
+- `tool_call_limit_exceeded`
+- `chat_cancelled`
 - `storage_error`
 - `configuration_error`
 
@@ -46,8 +48,10 @@ Report the code, concise message, selected alias or session ID when known, and s
 - Missing alias: inspect `conferllm models --json`; do not silently replace the requested model.
 - Capability or image-limit mismatch: explain the rejected input or replayed-history constraint. Do not silently omit images, drop history, change limits, or switch models.
 - Session/artifact corruption: stop the affected continuation or read, preserve the files, and report the failure. Do not rewrite private storage.
-- Provider error: it can represent an upstream failure or an unsupported response, including remote-only output images or tool calls. Do not assume it is an authentication problem.
+- Provider error: it can represent an upstream failure, a wrong API format for the endpoint/model, malformed tool calls, incomplete Responses output, or an image download failure. Do not assume it is an authentication problem. OpenAI endpoints default to Responses; older endpoints can explicitly select model-level `api_format: chat_completion`.
+- Tool error results: missing files/executables, invalid arguments, and command failures are returned to the model so it can correct them within the same turn. PowerShell is not installed automatically.
+- Tool-round limit: the turn exceeded 32 rounds. Check scope and side effects before asking the model to continue the task.
 
-A timeout or interruption does not prove the provider never ran. Do not blindly repeat ambiguous or completed calls; preserve any returned IDs and explain the uncertainty.
+A timeout or interruption does not prove that a provider or tool never ran. File changes and commands are not rolled back when the final response or session commit fails. Errors after tool attempts include `tool_calls_attempted` and `side_effects_may_remain`; a failed new session's returned ID does not prove it was committed. Do not blindly repeat ambiguous or completed calls; preserve any returned IDs and explain the uncertainty.
 
-For export or MCP inline-display warnings after success, retain `session.id`, `session.turn`, and the artifact URIs. An MCP client can retry reading an artifact resource without another model call. The CLI has no standalone artifact-read or re-export command; use an already-exported file in an authorized output directory, or report that export recovery is unavailable through the CLI. See [image handling](multimodal.md).
+For image-export warnings after success, retain `session.id`, `session.turn`, and the artifact URIs. MCP does not inline images; a client can read an artifact resource without another model call. The CLI has no standalone artifact-read or re-export command; use an already-exported file in an authorized output directory, or report that export recovery is unavailable through the CLI. See [image handling](multimodal.md).

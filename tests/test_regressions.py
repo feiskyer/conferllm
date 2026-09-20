@@ -184,7 +184,11 @@ def test_provider_images_field_is_normalized_and_replayed(tmp_path: Path) -> Non
     with patch.object(client, "chat", side_effect=[generated, response()]) as provider:
         first = service.chat("draw", model="vision")
         assert first.content == [
-            {"type": "image_ref", "artifact_id": "t0001-output-001"}
+            {
+                "type": "image_url",
+                "artifact_id": "t0001-output-001",
+                "image_url": {"url": first.artifacts[0]["exported_path"]},
+            }
         ]
         service.chat("describe that image", session_id=first.session_id)
     replay = provider.call_args_list[1].args[1][1]
@@ -271,7 +275,7 @@ async def test_mcp_compatibility_validation_keeps_stable_error_code() -> None:
         await server.call_tool("chat", {"message": "hello"})
 
 
-async def test_mcp_inline_failure_does_not_disguise_a_committed_turn() -> None:
+async def test_mcp_delivery_does_not_reread_or_inline_committed_images() -> None:
     result = ChatResult(
         session_id="20260904-0123456789abcdef0123456789abcdef",
         model="vision",
@@ -297,8 +301,9 @@ async def test_mcp_inline_failure_does_not_disguise_a_committed_turn() -> None:
             "create_chat", {"model": "vision", "message": "draw"}
         )
     assert returned.structured_content["ok"]
-    assert returned.structured_content["warnings"]
+    assert returned.structured_content["warnings"] == []
     assert isinstance(returned.content[-1], ResourceLink)
+    store.read_artifact.assert_not_called()
 
 
 async def test_mcp_resource_io_does_not_run_on_event_loop() -> None:

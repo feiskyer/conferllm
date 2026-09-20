@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 import shutil
 import tempfile
@@ -10,23 +11,48 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 from .artifacts import Artifact, ArtifactError, ArtifactTransaction
 from .client import LLMClient
+from .errors import ConferLLMError, normalize_error
 from .images import (
     ImagePayload,
     ImageProcessingError,
     image_bytes_to_data_url,
+    image_payload_from_bytes,
     load_image_inputs,
     normalize_assistant_content,
     prepare_image_output_dir,
-    replace_embedded_image_data,
     replace_image_refs,
+    replace_provider_images,
+)
+from .outputs import assistant_choices, merge_assistant_messages
+from .responses import (
+    normalize_response_images,
+    response_content,
+    response_items,
+    restore_response_images,
 )
 from .session import LoadedSession, SessionStore
+from .tool_protocol import tool_calls
+from .tools import ToolRuntime
+from .tools.common import check_cancelled
 
 CHAT_RESPONSE_SCHEMA_VERSION = "conferllm.chat.response.v1"
+MAX_TOOL_ROUNDS = 32
+DEFAULT_IMAGE_OUTPUT_DIR = Path("/tmp")
+
+
+@dataclass
+class _ModelTurn:
+    response: dict[str, Any]
+    assistant: dict[str, Any]
+    text: str
+    content: list[dict[str, Any]]
+    tool_messages: list[dict[str, Any]]
+    usage: dict[str, Any] | None
+    warnings: list[str]
 
 
 @dataclass(frozen=True)
@@ -61,6 +87,10 @@ class ChatResult:
         artifacts: list[dict[str, Any]] = []
         for artifact in self.artifacts:
             serialized = dict(artifact)
+            if artifact.get("direction") == "output":
+                serialized["saved_path"] = artifact.get(
+                    "exported_path"
+                ) or artifact.get("local_path")
             if not include_local_paths:
                 serialized.pop("local_path", None)
                 serialized.pop("exported_path", None)
@@ -94,7 +124,7 @@ class ChatResult:
 
 
 class ChatService:
-    """Coordinate model calls with transactional conversation sessions."""
+    """Run native model/tool loops with transactional conversation storage."""
 
     def __init__(
         self,
@@ -118,6 +148,7 @@ class ChatService:
         include_raw_response: bool = False,
     ) -> ChatResult:
         """Create or continue a chat session."""
+        check_cancelled()
         if not isinstance(message, str) or not message.strip():
             raise ValueError("Message must not be empty.")
         if (model is None) == (session_id is None):
@@ -126,9 +157,9 @@ class ChatService:
             raise ValueError("name is only valid when creating a new session.")
 
         output_dir = (
-            Path(image_output_dir).expanduser()
+            Path(image_output_dir).expanduser().resolve()
             if image_output_dir is not None
-            else None
+            else DEFAULT_IMAGE_OUTPUT_DIR
         )
         ordered_images = list(images or [])
 
@@ -185,30 +216,35 @@ class ChatService:
                 image_payloads,
                 schema_version=2,
             )
-            processed_response = self._call_model(
+            result = self._call_model(
                 model,
                 [provider_user],
-                transaction,
-            )
-            assistant_message, text, content = self._assistant_messages(
-                processed_response,
                 transaction,
                 schema_version=2,
             )
             artifacts = list(transaction.artifacts)
             active_transaction = transaction if artifacts else None
-            metadata = self.session_store.create_session(
-                session_id,
-                session_name,
-                model,
-                logical_user,
-                assistant_message,
-                response_id=self._response_id(processed_response),
-                usage=self._usage(processed_response),
-                created_at=created_at,
-                artifacts=artifacts,
-                artifact_transaction=active_transaction,
-            )
+            try:
+                check_cancelled()
+                metadata = self.session_store.create_session(
+                    session_id,
+                    session_name,
+                    model,
+                    logical_user,
+                    result.assistant,
+                    response_id=self._response_id(result.response),
+                    usage=result.usage,
+                    created_at=created_at,
+                    artifacts=artifacts,
+                    artifact_transaction=active_transaction,
+                    tool_messages=result.tool_messages,
+                )
+            except Exception as error:
+                if result.tool_messages:
+                    raise self._tool_failure(
+                        error, transaction, result.tool_messages
+                    ) from error
+                raise
 
         public_artifacts = self._public_artifacts(
             metadata.session_id,
@@ -224,11 +260,15 @@ class ChatService:
             name=metadata.name,
             model=metadata.model,
             turn=1,
-            answer=text,
-            content=content,
+            answer=self._public_text(result.content, public_artifacts),
+            content=self._public_content(result.content, public_artifacts),
             artifacts=public_artifacts,
-            warnings=[*warnings, *export_warnings],
-            response=processed_response if include_raw_response else None,
+            warnings=[*warnings, *result.warnings, *export_warnings],
+            response=(
+                self._public_response(result.response, public_artifacts)
+                if include_raw_response
+                else None
+            ),
         )
 
     def _continue_session(
@@ -274,28 +314,33 @@ class ChatService:
                     schema_version=loaded.schema_version,
                 )
                 history = self._provider_history(loaded)
-                processed_response = self._call_model(
+                result = self._call_model(
                     loaded.metadata.model,
                     [*history, provider_user],
-                    transaction,
-                )
-                assistant_message, text, content = self._assistant_messages(
-                    processed_response,
                     transaction,
                     schema_version=loaded.schema_version,
                 )
                 artifacts = list(transaction.artifacts)
                 active_transaction = transaction if artifacts else None
-                self.session_store.append_turn(
-                    session_id,
-                    loaded.next_turn,
-                    logical_user,
-                    assistant_message,
-                    response_id=self._response_id(processed_response),
-                    usage=self._usage(processed_response),
-                    artifacts=artifacts,
-                    artifact_transaction=active_transaction,
-                )
+                try:
+                    check_cancelled()
+                    self.session_store.append_turn(
+                        session_id,
+                        loaded.next_turn,
+                        logical_user,
+                        result.assistant,
+                        response_id=self._response_id(result.response),
+                        usage=result.usage,
+                        artifacts=artifacts,
+                        artifact_transaction=active_transaction,
+                        tool_messages=result.tool_messages,
+                    )
+                except Exception as error:
+                    if result.tool_messages:
+                        raise self._tool_failure(
+                            error, transaction, result.tool_messages
+                        ) from error
+                    raise
 
         public_artifacts = self._public_artifacts(session_id, artifacts)
         export_warnings = self._export_output_artifacts(
@@ -308,11 +353,15 @@ class ChatService:
             name=loaded.metadata.name,
             model=loaded.metadata.model,
             turn=loaded.next_turn,
-            answer=text,
-            content=content,
+            answer=self._public_text(result.content, public_artifacts),
+            content=self._public_content(result.content, public_artifacts),
             artifacts=public_artifacts,
-            warnings=[*warnings, *export_warnings],
-            response=processed_response if include_raw_response else None,
+            warnings=[*warnings, *result.warnings, *export_warnings],
+            response=(
+                self._public_response(result.response, public_artifacts)
+                if include_raw_response
+                else None
+            ),
         )
 
     def _stage_user_message(
@@ -367,7 +416,14 @@ class ChatService:
 
     def _provider_history(self, loaded: LoadedSession) -> list[dict[str, Any]]:
         if loaded.schema_version != 2:
-            return loaded.messages
+
+            def resolve_legacy(artifact_id: str) -> str:
+                data = self.session_store.read_loaded_artifact(loaded, artifact_id)
+                return image_bytes_to_data_url(
+                    data, image_payload_from_bytes(data).mime_type
+                )
+
+            return restore_response_images(loaded.messages, resolve_legacy)
 
         artifacts = {artifact.id: artifact for artifact in loaded.artifacts}
         cache: dict[str, str] = {}
@@ -385,29 +441,179 @@ class ChatService:
             cache[artifact_id] = value
             return value
 
-        return replace_image_refs(loaded.messages, resolve)
+        return restore_response_images(
+            replace_image_refs(loaded.messages, resolve), resolve
+        )
 
     def _call_model(
         self,
         model: str,
         messages: list[dict[str, Any]],
         transaction: ArtifactTransaction,
-    ) -> dict[str, Any]:
-        raw_response = self.client.chat(model, messages).model_dump()
-        if not isinstance(raw_response, dict):
-            raise RuntimeError("Model response is not a JSON object.")
+        *,
+        schema_version: int,
+    ) -> _ModelTurn:
+        history = list(messages)
+        intermediate: list[dict[str, Any]] = []
+        usage: dict[str, Any] = {}
+        seen: set[str] = set()
+        rounds = 0
+        attempted = 0
+        runtime = ToolRuntime()
+        try:
+            with runtime:
+                while True:
+                    check_cancelled()
+                    raw = self.client.chat(model, list(history)).model_dump()
+                    check_cancelled()
+                    if not isinstance(raw, dict):
+                        raise RuntimeError("Model response is not a JSON object.")
+                    provider_message = self._extract_assistant_message(raw)
+                    try:
+                        calls = tool_calls(provider_message)
+                    except ValueError as error:
+                        raise ImageProcessingError(str(error)) from error
+                    if any(call["id"] in seen for call in calls):
+                        raise ImageProcessingError("Provider repeated a tool call ID.")
+                    if calls and rounds >= MAX_TOOL_ROUNDS:
+                        raise ConferLLMError(
+                            "tool_call_limit_exceeded",
+                            f"Model exceeded {MAX_TOOL_ROUNDS} tool rounds.",
+                        )
+                    self._accumulate_usage(usage, self._usage(raw) or {})
+                    artifact_start = len(transaction.artifacts)
+                    processed = self._process_output_images(raw, transaction)
+                    outputs = [
+                        artifact
+                        for artifact in transaction.artifacts[artifact_start:]
+                        if artifact.direction == "output"
+                    ]
+                    assistant, text, content = self._assistant_messages(
+                        processed,
+                        transaction,
+                        schema_version=schema_version,
+                        output_artifacts=outputs,
+                        allow_tool_calls=bool(calls),
+                    )
+                    if not calls:
+                        break
+                    rounds += 1
+                    intermediate.append(assistant)
+                    history.append(
+                        self._current_provider_message(assistant, content, transaction)
+                    )
+                    for call in calls:
+                        check_cancelled()
+                        seen.add(call["id"])
+                        function = call["function"]
+                        attempted += 1
+                        tool_result = {
+                            "role": "tool",
+                            "tool_call_id": call["id"],
+                            "name": function["name"],
+                            "content": runtime.execute(
+                                function["name"], function["arguments"]
+                            ),
+                        }
+                        intermediate.append(tool_result)
+                        history.append(tool_result)
+        except Exception as error:
+            if attempted:
+                raise self._tool_failure(
+                    error, transaction, intermediate, attempted=attempted
+                ) from error
+            raise
+        return _ModelTurn(
+            processed,
+            assistant,
+            text,
+            content,
+            intermediate,
+            usage or None,
+            list(runtime.warnings),
+        )
 
-        def save_output(payload: ImagePayload, index: int) -> str:
+    @staticmethod
+    def _tool_failure(
+        error: Exception,
+        transaction: ArtifactTransaction,
+        messages: list[dict[str, Any]],
+        *,
+        attempted: int | None = None,
+    ) -> ConferLLMError:
+        public = normalize_error(error)
+        return ConferLLMError(
+            public.code,
+            public.message + " Tools may already have changed files or external "
+            "state; those effects are not rolled back. Do not blindly retry.",
+            details={
+                **public.details,
+                "session_id": transaction.session_id,
+                "turn": transaction.turn,
+                "tool_calls_attempted": (
+                    attempted
+                    if attempted is not None
+                    else sum(message["role"] == "tool" for message in messages)
+                ),
+                "side_effects_may_remain": True,
+            },
+        )
+
+    @staticmethod
+    def _accumulate_usage(total: dict[str, Any], usage: dict[str, Any]) -> None:
+        for key, value in usage.items():
+            if isinstance(value, dict):
+                nested = total.setdefault(key, {})
+                if isinstance(nested, dict):
+                    ChatService._accumulate_usage(nested, value)
+            elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                total[key] = total.get(key, 0) + value
+            elif value is not None:
+                total[key] = copy.deepcopy(value)
+
+    def _current_provider_message(
+        self,
+        assistant: dict[str, Any],
+        content: list[dict[str, Any]],
+        transaction: ArtifactTransaction,
+    ) -> dict[str, Any]:
+        """Replay current-turn images from staging, not uncommitted final paths."""
+        message = dict(assistant)
+        if any(item.get("type") == "image_ref" for item in content):
+            message["content"] = content
+        artifacts = {artifact.id: artifact for artifact in transaction.artifacts}
+
+        def resolve(artifact_id: str) -> str:
+            artifact = artifacts[artifact_id]
+            return image_bytes_to_data_url(
+                self._staged_path(transaction, artifact).read_bytes(),
+                artifact.mime_type,
+            )
+
+        return restore_response_images(replace_image_refs([message], resolve), resolve)[
+            0
+        ]
+
+    def _process_output_images(
+        self, raw_response: dict[str, Any], transaction: ArtifactTransaction
+    ) -> dict[str, Any]:
+        """Stage visible images without interpreting or rewriting tool arguments."""
+        processed = copy.deepcopy(raw_response)
+
+        def save_output(payload: ImagePayload, _index: int) -> str:
+            output_index = sum(
+                artifact.direction == "output" for artifact in transaction.artifacts
+            )
             try:
                 artifact = transaction.stage_bytes(
                     payload.data,
                     direction="output",
                     mime_type=payload.mime_type,
-                    index=index,
+                    index=output_index,
                 )
             except ArtifactError as error:
                 raise ImageProcessingError(
-                    f"Failed to save generated image {index + 1}: {error}",
+                    f"Failed to save generated image {output_index + 1}: {error}",
                     code=error.code,
                 ) from error
             public = artifact.to_public(
@@ -417,9 +623,32 @@ class ChatService:
             )
             return str(public["uri"])
 
-        processed, _ = replace_embedded_image_data(raw_response, save_output)
-        if not isinstance(processed, dict):  # pragma: no cover - type invariant
-            raise RuntimeError("Model response is not a JSON object.")
+        for choice, message in zip(
+            processed["choices"], assistant_choices(raw_response), strict=True
+        ):
+            native_items = response_items(message)
+            if native_items is not None:
+                native_messages = [
+                    item for item in native_items if item.get("type") == "message"
+                ]
+                contents, _ = replace_provider_images(
+                    [item["content"] for item in native_messages], save_output
+                )
+                for native_message, content in zip(
+                    native_messages, contents, strict=True
+                ):
+                    native_message["content"] = content
+                message["content"] = response_content(native_items)
+                message.pop("images", None)
+            else:
+                visible = {
+                    key: message[key]
+                    for key in ("content", "images", "refusal")
+                    if key in message
+                }
+                visible, _ = replace_provider_images(visible, save_output)
+                message.update(visible)
+            choice["message"] = message
         return processed
 
     def _assistant_messages(
@@ -428,18 +657,21 @@ class ChatService:
         transaction: ArtifactTransaction,
         *,
         schema_version: int,
+        output_artifacts: list[Artifact] | None = None,
+        allow_tool_calls: bool = False,
     ) -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
         provider_message = self._extract_assistant_message(response)
-        if provider_message.get("tool_calls") or provider_message.get("function_call"):
+        if not allow_tool_calls and provider_message.get("tool_calls"):
             raise ImageProcessingError(
-                "The provider requested tool execution, which ConferLLM does not perform."
+                "Final assistant response contains unexecuted tool calls."
             )
         original_content = provider_message.get("content")
-        output_artifacts = [
-            artifact
-            for artifact in transaction.artifacts
-            if artifact.direction == "output"
-        ]
+        if output_artifacts is None:
+            output_artifacts = [
+                artifact
+                for artifact in transaction.artifacts
+                if artifact.direction == "output"
+            ]
         artifact_uris = {
             f"conferllm://sessions/{transaction.session_id}/artifacts/{artifact.id}"
             for artifact in output_artifacts
@@ -475,14 +707,17 @@ class ChatService:
                 normalized_content.append(
                     {"type": "image_ref", "artifact_id": artifact.id}
                 )
-        if not normalized_content:
+        if not normalized_content and not allow_tool_calls:
             raise ImageProcessingError(
                 "Model response does not contain supported assistant text or embedded images."
             )
 
-        stored_message = dict(provider_message)
+        stored_message = copy.deepcopy(provider_message)
+        normalize_response_images(stored_message, artifact_uris)
         stored_message.pop("images", None)
-        if schema_version == 2:
+        if allow_tool_calls and not normalized_content:
+            stored_message["content"] = original_content
+        elif schema_version == 2:
             if isinstance(original_content, str) and not any(
                 item.get("type") == "image_ref" for item in normalized_content
             ):
@@ -527,8 +762,7 @@ class ChatService:
                     ):
                         continue
                     raise ImageProcessingError(
-                        "Provider output images must be embedded base64 data URLs; "
-                        "remote output URLs are not fetched."
+                        "Provider output image could not be saved as a turn artifact."
                     )
             raise ImageProcessingError(
                 "Provider returned an unsupported content block."
@@ -550,6 +784,98 @@ class ChatService:
         ]
 
     @staticmethod
+    def _public_content(
+        content: list[dict[str, Any]], artifacts: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Return paths for every output image, including earlier tool rounds."""
+        outputs = {
+            item["id"]: item for item in artifacts if item.get("direction") == "output"
+        }
+        seen: set[str] = set()
+        result = []
+        for part in content:
+            if part.get("type") == "image_ref" and part.get("artifact_id") in outputs:
+                artifact_id = part["artifact_id"]
+                seen.add(artifact_id)
+                artifact = outputs[artifact_id]
+                result.append(
+                    {
+                        "type": "image_url",
+                        "artifact_id": artifact_id,
+                        "image_url": {
+                            "url": artifact.get("exported_path")
+                            or artifact["local_path"]
+                        },
+                    }
+                )
+            else:
+                result.append(copy.deepcopy(part))
+        for artifact_id, artifact in outputs.items():
+            if artifact_id not in seen:
+                result.append(
+                    {
+                        "type": "image_url",
+                        "artifact_id": artifact_id,
+                        "image_url": {
+                            "url": artifact.get("exported_path")
+                            or artifact["local_path"]
+                        },
+                    }
+                )
+        return result
+
+    @staticmethod
+    def _public_text(
+        content: list[dict[str, Any]], artifacts: list[dict[str, Any]]
+    ) -> str:
+        pieces: list[str] = []
+        previous_image = False
+        for part in ChatService._public_content(content, artifacts):
+            is_image = part.get("type") == "image_url"
+            value = (
+                str(part["image_url"]["url"])
+                if is_image
+                else part.get("text", "")
+                if part.get("type") == "text"
+                else ""
+            )
+            if not value:
+                continue
+            if (
+                pieces
+                and (is_image or previous_image)
+                and not pieces[-1][-1].isspace()
+                and not value[0].isspace()
+            ):
+                pieces.append("\n")
+            pieces.append(value)
+            previous_image = is_image
+        return "".join(pieces)
+
+    @staticmethod
+    def _public_response(
+        response: dict[str, Any], artifacts: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        replacements = {
+            artifact["uri"]: artifact.get("exported_path") or artifact["local_path"]
+            for artifact in artifacts
+            if artifact.get("direction") == "output"
+        }
+
+        def replace(value: Any) -> Any:
+            if isinstance(value, str):
+                for uri, path in replacements.items():
+                    value = value.replace(uri, str(path))
+                return value
+            if isinstance(value, list):
+                return [replace(item) for item in value]
+            if isinstance(value, dict):
+                return {key: replace(item) for key, item in value.items()}
+            return value
+
+        return cast(dict[str, Any], replace(response))
+
+    @staticmethod
     def _staged_path(
         transaction: ArtifactTransaction,
         artifact: Artifact,
@@ -567,23 +893,7 @@ class ChatService:
 
     @staticmethod
     def _extract_assistant_message(response: dict[str, Any]) -> dict[str, Any]:
-        choices = response.get("choices")
-        if not isinstance(choices, list) or not choices:
-            raise RuntimeError("Model response does not contain an assistant message.")
-
-        choice = choices[0]
-        if not isinstance(choice, dict):
-            raise RuntimeError("Model response does not contain an assistant message.")
-
-        message = choice.get("message")
-        if not isinstance(message, dict) or "content" not in message:
-            raise RuntimeError("Model response does not contain an assistant message.")
-
-        assistant_message = dict(message)
-        assistant_message.setdefault("role", "assistant")
-        if assistant_message["role"] != "assistant":
-            raise ImageProcessingError("Model response has an invalid assistant role.")
-        return assistant_message
+        return merge_assistant_messages(assistant_choices(response))
 
     @staticmethod
     def _response_id(response: dict[str, Any]) -> str | None:

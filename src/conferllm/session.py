@@ -28,6 +28,8 @@ from .artifacts import (
     resolve_relative_path,
     verify_artifact_file,
 )
+from .responses import response_items, validate_response_state
+from .tool_protocol import tool_calls
 
 SCHEMA_VERSION = 2
 SUPPORTED_SCHEMA_VERSIONS = frozenset({1, 2})
@@ -278,6 +280,7 @@ class SessionStore:
         created_at: datetime | None = None,
         artifacts: list[Artifact] | tuple[Artifact, ...] | None = None,
         artifact_transaction: ArtifactTransaction | None = None,
+        tool_messages: list[dict[str, Any]] | None = None,
     ) -> SessionMetadata:
         """Atomically create a session containing its first complete turn."""
         session_file = self.session_path(session_id)
@@ -294,12 +297,15 @@ class SessionStore:
         )
         self._validate_message(user_message, "user", session_id, 2)
         self._validate_message(assistant_message, "assistant", session_id, 2)
+        intermediate = [] if tool_messages is None else tool_messages
+        self._validate_tool_messages(intermediate, assistant_message, session_id, 2)
         self._validate_image_references(
             user_message,
             assistant_message,
             turn_artifacts,
             session_id,
             2,
+            intermediate,
         )
         self._validate_optional_turn_fields(
             response_id,
@@ -328,6 +334,7 @@ class SessionStore:
             created_at=timestamp,
             schema_version=SCHEMA_VERSION,
             artifacts=turn_artifacts,
+            tool_messages=intermediate,
         )
         payload = self._serialize_records(session_id, header, turn)
 
@@ -449,8 +456,15 @@ class SessionStore:
                         turn_artifacts,
                         session_id,
                         line_number,
+                        record.get("tool_messages", []),
                     )
-                messages.extend([record["user"], record["assistant"]])
+                messages.extend(
+                    [
+                        record["user"],
+                        *record.get("tool_messages", []),
+                        record["assistant"],
+                    ]
+                )
                 turns.append(record)
                 artifacts.extend(turn_artifacts)
                 expected_turn += 1
@@ -478,6 +492,7 @@ class SessionStore:
         created_at: datetime | None = None,
         artifacts: list[Artifact] | tuple[Artifact, ...] | None = None,
         artifact_transaction: ArtifactTransaction | None = None,
+        tool_messages: list[dict[str, Any]] | None = None,
     ) -> None:
         """Atomically add one complete turn; the caller must hold the session lock."""
         if isinstance(turn, bool) or not isinstance(turn, int) or turn < 1:
@@ -504,6 +519,10 @@ class SessionStore:
             session_id,
             line_number,
         )
+        intermediate = [] if tool_messages is None else tool_messages
+        self._validate_tool_messages(
+            intermediate, assistant_message, session_id, line_number
+        )
         if loaded.schema_version == SCHEMA_VERSION:
             self._validate_image_references(
                 user_message,
@@ -511,6 +530,7 @@ class SessionStore:
                 turn_artifacts,
                 session_id,
                 line_number,
+                intermediate,
             )
         self._validate_optional_turn_fields(
             response_id,
@@ -527,6 +547,7 @@ class SessionStore:
             created_at=self._normalize_datetime(created_at),
             schema_version=loaded.schema_version,
             artifacts=turn_artifacts,
+            tool_messages=intermediate,
         )
         serialized = self._serialize_records(session_id, record).encode("utf-8")
         session_file = self.session_path(session_id)
@@ -906,6 +927,17 @@ class SessionStore:
                 line_number,
                 f"{expected_role} message is missing content",
             )
+        try:
+            validate_response_state(message)
+        except ValueError as error:
+            raise SessionStore._corruption(
+                session_id, line_number, str(error)
+            ) from error
+        for item in response_items(message) or []:
+            if item.get("type") == "message":
+                SessionStore._validate_message(
+                    item, "assistant", session_id, line_number
+                )
         content = message["content"]
         if content is None and expected_role == "assistant":
             return  # Legacy responses may have an empty assistant message.
@@ -935,6 +967,59 @@ class SessionStore:
                 )
 
     @staticmethod
+    def _validate_tool_messages(
+        messages: Any,
+        assistant_message: dict[str, Any],
+        session_id: str,
+        line_number: int,
+    ) -> None:
+        """Require complete native batches, with one result for each call ID."""
+        try:
+            if tool_calls(assistant_message):
+                raise ValueError(
+                    "Final assistant message contains unexecuted tool calls."
+                )
+            if not isinstance(messages, list):
+                raise ValueError("tool_messages must be an array.")
+            pending: dict[str, str] = {}
+            seen: set[str] = set()
+            for message in messages:
+                if not isinstance(message, dict):
+                    raise ValueError("Each tool message must be an object.")
+                role = message.get("role")
+                if role == "assistant":
+                    if pending:
+                        raise ValueError("Tool batch is missing results.")
+                    SessionStore._validate_message(
+                        message, "assistant", session_id, line_number
+                    )
+                    calls = tool_calls(message)
+                    if not calls:
+                        raise ValueError("Intermediate assistant has no tool calls.")
+                    for call in calls:
+                        if call["id"] in seen:
+                            raise ValueError("Duplicate tool call ID in turn.")
+                        seen.add(call["id"])
+                        pending[call["id"]] = call["function"]["name"]
+                elif role == "tool":
+                    call_id = message.get("tool_call_id")
+                    if not isinstance(call_id, str) or call_id not in pending:
+                        raise ValueError("Tool result has no matching pending call.")
+                    if not isinstance(message.get("content"), str):
+                        raise ValueError("Tool result content must be text.")
+                    if message.get("name", pending[call_id]) != pending[call_id]:
+                        raise ValueError("Tool result name does not match its call.")
+                    del pending[call_id]
+                else:
+                    raise ValueError("Invalid role in tool_messages.")
+            if pending:
+                raise ValueError("Tool batch is missing results.")
+        except ValueError as error:
+            raise SessionStore._corruption(
+                session_id, line_number, str(error)
+            ) from error
+
+    @staticmethod
     def _turn_record(
         turn: int,
         user_message: dict[str, Any],
@@ -944,6 +1029,7 @@ class SessionStore:
         created_at: datetime,
         schema_version: int,
         artifacts: list[Artifact],
+        tool_messages: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         record = {
             "type": "turn",
@@ -956,6 +1042,8 @@ class SessionStore:
         }
         if schema_version == SCHEMA_VERSION:
             record["artifacts"] = [artifact.to_record() for artifact in artifacts]
+        if tool_messages:
+            record["tool_messages"] = tool_messages
         return record
 
     @staticmethod
@@ -1110,6 +1198,12 @@ class SessionStore:
             session_id,
             line_number,
         )
+        SessionStore._validate_tool_messages(
+            record.get("tool_messages", []),
+            record["assistant"],
+            session_id,
+            line_number,
+        )
         SessionStore._validate_optional_turn_fields(
             record.get("response_id"),
             record.get("usage"),
@@ -1231,9 +1325,17 @@ class SessionStore:
         artifacts: list[Artifact],
         session_id: str,
         line_number: int,
+        tool_messages: list[dict[str, Any]] | None = None,
     ) -> None:
         available = {artifact.id for artifact in artifacts}
-        for message in (user_message, assistant_message):
+        messages = [user_message, *(tool_messages or []), assistant_message]
+        for message in list(messages):
+            messages.extend(
+                item
+                for item in response_items(message) or []
+                if item.get("type") == "message"
+            )
+        for message in messages:
             content = message.get("content")
             if not isinstance(content, list):
                 continue

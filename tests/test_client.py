@@ -1,6 +1,6 @@
 """Unit tests for AI client (LiteLM integration)."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -11,6 +11,7 @@ from conferllm.config import (
     ModelCapabilities,
     ModelConfig,
 )
+from conferllm.tools import tool_definitions
 
 
 class TestLLMClient:
@@ -22,6 +23,7 @@ class TestLLMClient:
             model_list=[
                 ModelConfig(
                     model_name="gpt-4",
+                    api_format="chat_completion",
                     litellm_params={
                         "model": "openai/gpt-4",
                         "api_key": "test-key",
@@ -64,6 +66,11 @@ class TestLLMClient:
                 max_tokens=2048,
                 temperature=0.7,
                 stream=False,
+                tools=tool_definitions(),
+                tool_choice="auto",
+                drop_params=False,
+                _skip_responses_api_bridge=True,
+                logger_fn=ANY,
             )
 
     def test_chat_with_global_system_prompt(self):
@@ -73,6 +80,7 @@ class TestLLMClient:
             model_list=[
                 ModelConfig(
                     model_name="gpt-4",
+                    api_format="chat_completion",
                     litellm_params={"model": "openai/gpt-4", "api_key": "test-key"},
                 )
             ],
@@ -98,6 +106,11 @@ class TestLLMClient:
                 ],
                 api_key="test-key",
                 stream=False,
+                tools=tool_definitions(),
+                tool_choice="auto",
+                drop_params=False,
+                _skip_responses_api_bridge=True,
+                logger_fn=ANY,
             )
 
     def test_chat_with_model_specific_system_prompt(self):
@@ -107,6 +120,7 @@ class TestLLMClient:
             model_list=[
                 ModelConfig(
                     model_name="gpt-4",
+                    api_format="chat_completion",
                     system_prompt="Model-specific system prompt",
                     litellm_params={"model": "openai/gpt-4", "api_key": "test-key"},
                 )
@@ -133,6 +147,11 @@ class TestLLMClient:
                 ],
                 api_key="test-key",
                 stream=False,
+                tools=tool_definitions(),
+                tool_choice="auto",
+                drop_params=False,
+                _skip_responses_api_bridge=True,
+                logger_fn=ANY,
             )
 
     def test_chat_with_messages_input(self):
@@ -159,6 +178,11 @@ class TestLLMClient:
                 max_tokens=2048,
                 temperature=0.7,
                 stream=False,
+                tools=tool_definitions(),
+                tool_choice="auto",
+                drop_params=False,
+                _skip_responses_api_bridge=True,
+                logger_fn=ANY,
             )
 
     def test_chat_with_non_existing_model(self):
