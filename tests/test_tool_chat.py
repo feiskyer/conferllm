@@ -6,6 +6,7 @@ import asyncio
 import base64
 import copy
 import json
+import logging
 from io import StringIO
 from pathlib import Path
 from threading import Event
@@ -606,7 +607,10 @@ def test_cli_runs_tools_and_emits_only_final_json(tmp_path: Path) -> None:
     assert path.read_text() == "CLI"
 
 
-async def test_mcp_wire_chat_runs_tools_and_replays_results(tmp_path: Path) -> None:
+async def test_mcp_wire_chat_runs_tools_and_replays_results(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
     client = configured_client(tmp_path / "sessions")
     path = tmp_path / "mcp-out"
     server = create_mcp_server(client)
@@ -650,6 +654,28 @@ async def test_mcp_wire_chat_runs_tools_and_replays_results(tmp_path: Path) -> N
                 assert continued.structured_content["session"]["turn"] == 2
             tasks.cancel_scope.cancel()
     assert path.read_text() == "MCP"
+    progress = [
+        record.progress
+        for record in caplog.records
+        if record.name == "conferllm.progress"
+    ]
+    assert [entry["event"] for entry in progress] == [
+        "model.request",
+        "model.response",
+        "tool.start",
+        "tool.result",
+        "model.request",
+        "model.response",
+        "model.request",
+        "model.response",
+    ]
+    assert progress[2]["name"] == "write_file"
+    assert progress[3]["output"]["ok"] is True
+    assert progress[-1]["turn"] == 2
+    assert all(
+        entry["session"] == created.structured_content["session"]["id"]
+        for entry in progress
+    )
     assert any(
         message["role"] == "tool"
         for message in provider.call_args_list[2].kwargs["messages"]

@@ -23,10 +23,11 @@ ConferLLM is a minimalist agent harness with multi-model support and essential h
                ▼                                               │ Responses API
 ┌──────────────────────────────┐                ┌──────────────▼───────────────┐
 │ Host Tools (Unrestricted)    │                │ Configured AI Models         │
-│ • Shell: bash, pwsh, git     │                │ • OpenAI (Responses / Chat)  │
-│ • Background: output, kill   │                │ • Anthropic Claude           │
-│ • Files: read, write, edit,  │                │ • DeepSeek R1 / Reasoner     │
-│   append, list_directory     │                │ • Local Ollama / vLLM        │
+│ • Shell: bash, pwsh, git     │                │ • OpenAI GPT-6 Astra         │
+│ • Background: output, kill   │                │ • Claude Opus/Sonnet         │
+│ • Files: read, write, edit,  │                │ • DeepSeek Flash / Pro       │
+│   append, list_directory     │                │ • Google Gemini              │
+│                              │                │ • Local Ollama               │
 └──────────────────────────────┘                └──────────────────────────────┘
 ```
 
@@ -85,42 +86,51 @@ Populate `~/.conferllm/config.yaml` with your preferred providers. For example:
 
 ```yaml
 model_list:
-  - model_name: gpt-4o
+  - model_name: gpt-6-astra
+    api_format: responses
     capabilities:
       input_modalities: [text, image]
       output_modalities: [text]
     litellm_params:
-      model: openai/gpt-4o
+      model: openai/gpt-6-astra
       api_key: "your-openai-key"
 
-  - model_name: claude-3-5-sonnet
+  - model_name: claude-opus-5
     capabilities:
       input_modalities: [text, image]
       output_modalities: [text]
     litellm_params:
-      model: anthropic/claude-3-5-sonnet-20241022
+      model: anthropic/claude-opus-5
       api_key: "your-anthropic-key"
 
-  - model_name: deepseek-r1
+  - model_name: DeepSeek-V4.1-Flash
     capabilities:
-      input_modalities: [text]
+      input_modalities: [text, image]
       output_modalities: [text]
     litellm_params:
-      model: deepseek/deepseek-reasoner
+      model: deepseek/deepseek-flash
       api_key: "your-deepseek-key"
 
-  - model_name: local-llama
+  - model_name: gemini-3.8-flash
+    capabilities:
+      input_modalities: [text, image]
+      output_modalities: [text]
     litellm_params:
-      model: ollama_chat/llama3.2
+      model: gemini/gemini-3.8-flash
+      api_key: "your-gemini-key"
+
+  - model_name: local-qwen3
+    litellm_params:
+      model: ollama_chat/qwen3-coder:30b
       api_base: "http://localhost:11434"
 ```
 
-*Tip:* See [config_example.yaml](config_example.yaml) for more provider templates including Gemini, Mistral, Azure, and AWS Bedrock.
+*Tip:* See [config_example.yaml](config_example.yaml) for more provider templates including Gemini 3.8 Flash, Qwen 3 Coder, Mistral Large, Together AI, Hugging Face, Azure, and AWS Bedrock.
 
 ### 3. Run Your First Chat
 
 ```bash
-conferllm chat --model gpt-4o --prompt "Explain Raft leader election in two sentences."
+conferllm chat --model gpt-6-astra --prompt "Explain Raft leader election in two sentences."
 ```
 
 Output includes the answer and a reusable `Session` ID:
@@ -136,7 +146,7 @@ Raft leader election ensures a cluster chooses a single leader through randomize
 
 ## AI Agent Integration
 
-ConferLLM is designed from the ground up for agent consumption. AI agents use ConferLLM to obtain attributed second opinions, delegate specialized tasks (e.g., deep math proofs to DeepSeek R1, visual analysis to GPT-4o, or private offline tasks to local Ollama), and let external models interact with the host repository.
+ConferLLM is designed from the ground up for agent consumption. AI agents use ConferLLM to obtain attributed second opinions, delegate specialized tasks (e.g., deep math proofs to DeepSeek V4.1 Flash, visual analysis to GPT-6 Astra, or private offline tasks to local Llama 4), and let external models interact with the host repository.
 
 ### Option A: Use as an Agent Skill (Claude Code & Codex)
 
@@ -153,7 +163,7 @@ conferllm skill install --target codex
 Once installed, your agent automatically knows how to discover configured models, run queries with `--json`, parse outputs, and continue conversations.
 
 **Example agent instruction:**
-> *"Use $conferllm to ask deepseek-r1 to review our Raft consensus implementation in src/consensus.py and check for election split-vote edge cases."*
+> *"Use $conferllm to ask DeepSeek-V4.1-Flash to review our Raft consensus implementation in src/consensus.py and check for election split-vote edge cases."*
 
 ### Option B: Use as an MCP Server (Claude Desktop, Cursor, Cline, Windsurf)
 
@@ -203,7 +213,7 @@ conferllm chat --session 20260905-0123456789abcdef0123456789abcdef --prompt "Now
 AI agents and scripts should always pass `--json` for predictable parsing:
 
 ```bash
-conferllm chat --model gpt-4o --prompt "Explain Raft." --json
+conferllm chat --model gpt-6-astra --prompt "Explain Raft." --json
 ```
 
 **JSON Response Contract (`conferllm.chat.response.v1`):**
@@ -215,7 +225,7 @@ conferllm chat --model gpt-4o --prompt "Explain Raft." --json
   "session": {
     "id": "20260905-0123456789abcdef0123456789abcdef",
     "name": "Explain Raft.",
-    "model": "gpt-4o",
+    "model": "gpt-6-astra",
     "turn": 1
   },
   "message": {
@@ -244,7 +254,7 @@ Key fields:
 For complex multi-line prompts, markdown instructions, or code snippets:
 
 ```bash
-conferllm chat --model deepseek-r1 --prompt-file ./review_prompt.md --json
+conferllm chat --model DeepSeek-V4.1-Flash --prompt-file ./review_prompt.md --json
 ```
 
 ### 4. Multimodal Analysis (Images)
@@ -253,7 +263,7 @@ Attach one or more images using repeated `--image` flags:
 
 ```bash
 conferllm chat \
-  --model gpt-4o \
+  --model gpt-6-astra \
   --prompt "Analyze the architectural bottleneck shown in this diagram." \
   --image ./architecture.png \
   --json
@@ -268,7 +278,7 @@ Delegated models have native access to host files and commands without extra fla
 
 ```bash
 conferllm chat \
-  --model gpt-4o \
+  --model gpt-6-astra \
   --prompt "Read pyproject.toml and tell me what dependencies need attention." \
   --json
 ```
@@ -285,7 +295,7 @@ conferllm sessions list
 conferllm sessions list --query raft --json
 
 # Filter by model alias and date range
-conferllm sessions list --model gpt-4o --since 2026-09-01 --limit 10 --json
+conferllm sessions list --model gpt-6-astra --since 2026-09-01 --limit 10 --json
 ```
 
 ### 7. Compare Models Side-by-Side
@@ -293,8 +303,8 @@ conferllm sessions list --model gpt-4o --since 2026-09-01 --limit 10 --json
 To compare how different models handle the same challenge, start independent chats:
 
 ```bash
-conferllm chat --model deepseek-r1 --prompt-file ./challenge.md --json
-conferllm chat --model claude-3-5-sonnet --prompt-file ./challenge.md --json
+conferllm chat --model DeepSeek-V4.1-Flash --prompt-file ./challenge.md --json
+conferllm chat --model claude-opus-5 --prompt-file ./challenge.md --json
 ```
 
 ---
@@ -340,7 +350,7 @@ conferllm models --json
 Inspect non-secret details of a specific model alias:
 
 ```bash
-conferllm model-info gpt-4o
+conferllm model-info gpt-6-astra
 ```
 
 ### Common Issues
@@ -348,7 +358,7 @@ conferllm model-info gpt-4o
 - **`command not found: conferllm`:** Run `uv tool update-shell` and restart terminal, or check your virtualenv `PATH`.
 - **`model_not_found`:** Run `conferllm models` to see available aliases. Model aliases in `config.yaml` are the identifiers used on the CLI, not raw provider names.
 - **`configuration_error`:** Verify YAML syntax in `~/.conferllm/config.yaml`. Permissions should be `0700` for directory and `0600` for the configuration file.
-- **Provider Responses API vs Chat Completions:** OpenAI models use Responses by default. For legacy OpenAI-compatible endpoints that only support `/chat/completions`, add `api_format: chat_completion` to the model config.
+- **Provider Responses API vs Chat Completions:** OpenAI models use Responses by default. For legacy OpenAI-compatible endpoints that only support `/chat/completions`, add `api_format: chat_completion` to the model config. GPT-6 Astra tool calling requires Responses.
 
 ---
 

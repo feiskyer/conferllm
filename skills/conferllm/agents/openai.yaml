@@ -1,6 +1,6 @@
 interface:
   display_name: "ConferLLM"
   short_description: "Query configured AI models with persistent chats and built-in host tools"
-  default_prompt: "Use $conferllm to consult configured models for specialized reasoning, code reviews, multimodal analysis, or second opinions."
+  default_prompt: "Use $conferllm to consult configured models for specialized reasoning, code reviews, multimodal analysis, or second opinions. Keep --json for machine-readable results; omit it only when human-visible progress logs on stderr are wanted."
 policy:
   allow_implicit_invocation: true

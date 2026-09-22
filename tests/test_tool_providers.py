@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import copy
 import json
+import logging
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -225,8 +226,9 @@ def _responses(provider: str, arguments: dict[str, str]) -> list[dict[str, Any]]
     ],
 )
 def test_native_provider_wire_round_trip(
-    tmp_path: Path, provider: str, model: str
+    tmp_path: Path, provider: str, model: str, caplog: pytest.LogCaptureFixture
 ) -> None:
+    caplog.set_level(logging.INFO)
     target = tmp_path / "native.txt"
     replies = _responses(provider, {"path": str(target), "content": "native"})
     requests: list[dict[str, Any]] = []
@@ -307,6 +309,27 @@ def test_native_provider_wire_round_trip(
             raise
 
     assert result.text == "native done"
+    progress = [
+        record.progress
+        for record in caplog.records
+        if record.name == "conferllm.progress"
+    ]
+    assert [entry["event"] for entry in progress[:6]] == [
+        "model.request",
+        "model.response",
+        "tool.start",
+        "tool.result",
+        "model.request",
+        "model.response",
+    ]
+    assert progress[2]["input"] == {
+        "path": str(target),
+        "content": "native",
+    }
+    assert progress[3]["output"]["ok"] is True
+    assert progress[5]["text"] == "native done"
+    assert "synthetic-test-key" not in caplog.text
+    assert "opaque-reasoning" not in caplog.text
     assert target.read_text() == "native"
     assert len(requests) == (3 if provider == "openai_responses" else 2) and not replies
     expected_names = {tool.name for tool in TOOLS}

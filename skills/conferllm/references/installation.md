@@ -48,37 +48,46 @@ touch ~/.conferllm/config.yaml
 chmod 600 ~/.conferllm/config.yaml
 ```
 
-The user must supply provider credentials themselves. A self-contained starter template:
+The user must supply provider credentials themselves. A self-contained starter template with modern flagship models:
 
 ```yaml
 model_list:
-  - model_name: gpt-4o
+  - model_name: gpt-6-astra
+    api_format: responses
     capabilities:
       input_modalities: [text, image]
       output_modalities: [text]
     litellm_params:
-      model: openai/gpt-4o
+      model: openai/gpt-6-astra
       api_key: "replace-with-your-key"
 
-  - model_name: claude-3-5-sonnet
+  - model_name: claude-opus-5
     capabilities:
       input_modalities: [text, image]
       output_modalities: [text]
     litellm_params:
-      model: anthropic/claude-3-5-sonnet-20241022
+      model: anthropic/claude-opus-5
       api_key: "replace-with-your-key"
 
-  - model_name: deepseek-r1
+  - model_name: DeepSeek-V4.1-Flash
     capabilities:
-      input_modalities: [text]
+      input_modalities: [text, image]
       output_modalities: [text]
     litellm_params:
-      model: deepseek/deepseek-reasoner
+      model: deepseek/deepseek-flash
       api_key: "replace-with-your-key"
 
-  - model_name: local-llama
+  - model_name: gemini-3.8-flash
+    capabilities:
+      input_modalities: [text, image]
+      output_modalities: [text]
     litellm_params:
-      model: ollama_chat/llama3.2
+      model: gemini/gemini-3.8-flash
+      api_key: "replace-with-your-key"
+
+  - model_name: local-qwen3
+    litellm_params:
+      model: ollama_chat/qwen3-coder:30b
       api_base: "http://localhost:11434"
 ```
 

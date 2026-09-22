@@ -15,6 +15,7 @@ from .completions import CompletionCapture
 from .config import ConferLLMConfig, ModelConfig
 from .errors import ConferLLMError
 from .images import image_bytes_to_data_url, image_payload_from_bytes
+from .progress import model_request
 from .responses import (
     messages_to_input,
     strip_response_state,
@@ -148,6 +149,7 @@ class LLMClient:
         prepared_messages = self._prepare_messages_with_system_prompt(
             processed_messages, model_config
         )
+        model_request(model_name, prepared_messages)
 
         try:
             # Get the model parameter and validate it
@@ -218,7 +220,7 @@ class LLMClient:
             # Provider errors may contain request bodies, credentials, or signed
             # URLs. Preserve the failure category, never the provider's text.
             error_type = type(error).__name__
-            logger.error("Error calling model %s (%s)", model_name, error_type)
+            logger.debug("Error calling model %s (%s)", model_name, error_type)
             raise ConferLLMError(
                 "provider_error",
                 f"Failed to get response from {model_name}. "
@@ -276,7 +278,7 @@ class LLMClient:
                 source_name=path.name,
             )
             data_url = image_bytes_to_data_url(payload.data, payload.mime_type)
-            logger.info("Converted local image to base64: %s", file_path)
+            logger.debug("Converted local image to base64: %s", file_path)
             return data_url
         except Exception as error:
             logger.error("Failed to read and encode image %s: %s", file_path, error)

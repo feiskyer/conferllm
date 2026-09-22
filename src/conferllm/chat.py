@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import json
+import logging
 import os
 import shutil
 import tempfile
@@ -11,6 +13,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
+from time import perf_counter
 from typing import Any, cast
 
 from .artifacts import Artifact, ArtifactError, ArtifactTransaction
@@ -28,6 +31,7 @@ from .images import (
     replace_provider_images,
 )
 from .outputs import assistant_choices, merge_assistant_messages
+from .progress import event, turn_progress
 from .responses import (
     normalize_response_images,
     response_content,
@@ -461,9 +465,16 @@ class ChatService:
         attempted = 0
         runtime = ToolRuntime()
         try:
-            with runtime:
+            with (
+                turn_progress(
+                    transaction.session_id, transaction.turn, model
+                ) as progress,
+                runtime,
+            ):
                 while True:
+                    progress.round = rounds + 1
                     check_cancelled()
+                    model_started = perf_counter()
                     raw = self.client.chat(model, list(history)).model_dump()
                     check_cancelled()
                     if not isinstance(raw, dict):
@@ -495,6 +506,13 @@ class ChatService:
                         output_artifacts=outputs,
                         allow_tool_calls=bool(calls),
                     )
+                    event(
+                        "model.response",
+                        elapsed_seconds=round(perf_counter() - model_started, 3),
+                        text=text,
+                        tool_calls=len(calls),
+                        output_images=len(outputs),
+                    )
                     if not calls:
                         break
                     rounds += 1
@@ -507,6 +525,13 @@ class ChatService:
                         seen.add(call["id"])
                         function = call["function"]
                         attempted += 1
+                        tool_started = perf_counter()
+                        event(
+                            "tool.start",
+                            call_id=call["id"],
+                            name=function["name"],
+                            input=function["arguments"],
+                        )
                         tool_result = {
                             "role": "tool",
                             "tool_call_id": call["id"],
@@ -515,6 +540,15 @@ class ChatService:
                                 function["name"], function["arguments"]
                             ),
                         }
+                        output = json.loads(tool_result["content"])
+                        event(
+                            "tool.result",
+                            level=logging.INFO if output["ok"] else logging.WARNING,
+                            call_id=call["id"],
+                            name=function["name"],
+                            output=output,
+                            elapsed_seconds=round(perf_counter() - tool_started, 3),
+                        )
                         intermediate.append(tool_result)
                         history.append(tool_result)
         except Exception as error:

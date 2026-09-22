@@ -31,109 +31,98 @@ image_limits:
 # -------------------
 # Each entry in model_list defines a model you can use with ConferLLM
 # The model_name is what you'll use in CLI and MCP calls
-# (e.g., chat(message="Hello", model="gpt-4"))
+# (e.g., chat(message="Hello", model="gpt-6-astra"))
 # The litellm_params configure the actual provider connection
 # Optional: Add system_prompt field to override global system prompt for specific models
 
 model_list:
   # ============================================================================
-  # OPENAI MODELS
+  # OPENAI MODELS (GPT-6 Astra & Reasoning Series)
   # ============================================================================
 
-  - model_name: gpt-4o  # Friendly name for MCP tools
-    api_format: responses  # Default for the openai provider
-    # Model-specific system prompt (overrides global_system_prompt for this model only)
-    system_prompt: "You are a helpful multimodal assistant."
-    # Optional non-secret metadata used for validation before provider calls.
+  - model_name: gpt-6-astra  # Frontier multimodal model (requires Responses API)
+    api_format: responses  # Responses API (default for OpenAI)
+    system_prompt: "You are GPT-6 Astra, an advanced AI system with multimodal and deep tool reasoning capabilities."
     capabilities:
       input_modalities: [text, image]
       output_modalities: [text]
-      max_input_images: 8
+      max_input_images: 16
     litellm_params:
-      # LiteLM provider/model identifier (format: provider/model-name)
-      model: openai/gpt-4o
-      # Your actual OpenAI API key - REPLACE THIS!
+      model: openai/gpt-6-astra
       api_key: "sk-your-openai-api-key-here"
-      # Maximum tokens in response (optional, provider-specific limits apply)
-      max_tokens: 4096
-      # Response creativity: 0.0 (deterministic) to 1.0 (creative) (optional)
-      temperature: 0.7
-      # Additional parameters you can use:
-      # top_p: 0.9  # Nucleus sampling parameter
-      # frequency_penalty: 0.1  # Reduce repetition
-      # presence_penalty: 0.1  # Encourage topic diversity
-      # stop: ["\n\n", "Human:"]  # Stop sequences
+      max_tokens: 128000
 
-  - model_name: gpt-5
-    api_format: responses
+  # ============================================================================
+  # ANTHROPIC MODELS (Claude Series)
+  # ============================================================================
+
+  - model_name: claude-opus-5  # Anthropic's flagship model
+    system_prompt: "You are Claude Opus 5, an AI assistant created by Anthropic. You excel at coding, architecture, deep reasoning, and multimodal analysis."
+    capabilities:
+      input_modalities: [text, image]
+      output_modalities: [text]
+      max_input_images: 16
+    litellm_params:
+      model: anthropic/claude-opus-5
+      api_key: "sk-ant-your-anthropic-api-key-here"
+      max_tokens: 128000
+
+  # ============================================================================
+  # DEEPSEEK MODELS
+  # ============================================================================
+
+  - model_name: DeepSeek-V4.1-Flash
+    capabilities:
+      input_modalities: [text, image]
+      output_modalities: [text]
+    litellm_params:
+      model: deepseek/deepseek-flash
+      api_key: "sk-your-deepseek-api-key-here"
+      max_tokens: 128000
+
+  # ============================================================================
+  # GOOGLE GEMINI MODELS
+  # ============================================================================
+
+  - model_name: gemini-3.8-flash
+    capabilities:
+      input_modalities: [text, image]
+      output_modalities: [text]
+      max_input_images: 16
+    litellm_params:
+      model: gemini/gemini-3.8-flash
+      api_key: "your-gemini-api-key"
+      max_tokens: 65536
+
+  # ============================================================================
+  # LOCAL LLM SERVERS (Ollama, vLLM, LM Studio)
+  # ============================================================================
+
+  - model_name: local-llama4  # Meta Llama 4 via Ollama
+    litellm_params:
+      model: ollama_chat/llama4
+      api_base: "http://localhost:11434"
+
+  - model_name: local-qwen3  # Qwen 3 Coder via Ollama
     capabilities:
       input_modalities: [text]
       output_modalities: [text]
     litellm_params:
-      model: openai/gpt-5
-      api_key: "sk-your-openai-api-key-here"  # REPLACE WITH YOUR KEY
-      max_tokens: 4096  # Higher token limit for longer responses
-      # Reasoning models may reject sampling parameters; use their defaults.
-
-  # ============================================================================
-  # ANTHROPIC MODELS
-  # ============================================================================
-
-  - model_name: claude-sonnet  # Claude 4 Sonnet - balanced performance
-    # Model-specific system prompt (overrides global_system_prompt for this model only)
-    system_prompt: "You are Claude 4 Sonnet, an AI assistant created by Anthropic. You excel at coding, analysis, and creative tasks."
-    capabilities:
-      input_modalities: [text, image]
-      output_modalities: [text]
-      max_input_images: 8
-    litellm_params:
-      # Full model identifier with version
-      model: anthropic/claude-sonnet-4-20250514
-      # Your actual Anthropic API key - REPLACE THIS!
-      api_key: "sk-ant-your-anthropic-api-key-here"
-      max_tokens: 12000
-      temperature: 0.7
-
-  # ============================================================================
-  # GOOGLE MODELS
-  # ============================================================================
-  - model_name: gemini-2.5-pro
-    capabilities:
-      input_modalities: [text, image]
-      output_modalities: [text]
-      max_input_images: 8
-    litellm_params:
-      model: gemini/gemini-2.5-pro
-      api_key: "your-gemini-api-key"  # REPLACE WITH YOUR KEY
-      max_tokens: 8000
-      temperature: 0.7
-  - model_name: gemini-2.5-flash-image-preview
-    capabilities:
-      input_modalities: [text, image]
-      output_modalities: [text, image]
-      max_input_images: 8
-    litellm_params:
-      model: gemini/gemini-2.5-flash-image-preview
-      api_key: "your-gemini-api-key"  # REPLACE WITH YOUR KEY
-      max_tokens: 8000
-      temperature: 0.7
-
+      model: ollama_chat/qwen3-coder:30b
+      api_base: "http://localhost:11434"
 
   # ============================================================================
   # AZURE OPENAI MODELS
   # ============================================================================
   # Uncomment and configure if you use Azure OpenAI Service
 
-  # - model_name: azure-gpt4
+  # - model_name: azure-gpt-6
   #   litellm_params:
-  #     model: azure/gpt-4
-  #     api_key: "your-azure-api-key-here"  # REPLACE WITH YOUR KEY
-  #     # Azure-specific: your Azure OpenAI endpoint
+  #     model: azure/gpt-6-astra
+  #     api_key: "your-azure-api-key-here"
   #     api_base: "https://your-resource-name.openai.azure.com/"
-  #     # Azure-specific: API version
-  #     api_version: "2024-02-15-preview"
-  #     max_tokens: 2048
-  #     temperature: 0.7
+  #     api_version: "2026-06-01"
+  #     max_tokens: 4096
 
   # ============================================================================
   # AWS BEDROCK MODELS
@@ -142,84 +131,72 @@ model_list:
 
   # - model_name: bedrock-claude
   #   litellm_params:
-  #     model: bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0
-  #     # AWS credentials (can also use environment variables)
+  #     model: bedrock/anthropic.claude-sonnet-5
   #     aws_access_key_id: "your-aws-access-key"
   #     aws_secret_access_key: "your-aws-secret-key"
   #     aws_region_name: "us-east-1"
+  #     max_tokens: 8192
+
+  # ============================================================================
+  # TOGETHER AI MODELS
+  # ============================================================================
+  # - model_name: together-qwen3-coder
+  #   litellm_params:
+  #     model: together_ai/Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8
+  #     api_key: "your-together-api-key"
   #     max_tokens: 4096
-  #     temperature: 0.7
 
   # ============================================================================
-  # TOGETHER AI MODELS (Open Source)
+  # GROQ MODELS
   # ============================================================================
-  # Uncomment and configure if you use Together AI
-
-  # - model_name: llama-70b
+  # - model_name: groq-gpt-oss
   #   litellm_params:
-  #     model: together_ai/meta-llama/Llama-2-70b-chat-hf
-  #     api_key: "your-together-api-key-here"  # REPLACE WITH YOUR KEY
-  #     max_tokens: 2048
-  #     temperature: 0.7
+  #     model: groq/openai/gpt-oss-120b
+  #     api_key: "your-groq-api-key"
+  #     max_tokens: 4096
 
-  # - model_name: mistral-7b
+  # ============================================================================
+  # MISTRAL AI MODELS
+  # ============================================================================
+  # - model_name: mistral-large
   #   litellm_params:
-  #     model: together_ai/mistralai/Mistral-7B-v0.1
-  #     api_key: "your-together-api-key-here"  # REPLACE WITH YOUR KEY
-  #     max_tokens: 2048
-  #     temperature: 0.7
+  #     model: mistral/mistral-large-2512
+  #     api_key: "your-mistral-api-key"
+  #     max_tokens: 4096
 
   # ============================================================================
   # HUGGING FACE MODELS
   # ============================================================================
-  # Uncomment and configure if you use Hugging Face Inference API
-
   # - model_name: hf-model
   #   litellm_params:
   #     model: huggingface/your-model-name
-  #     api_key: "your-hf-api-key-here"  # REPLACE WITH YOUR KEY
-  #     max_tokens: 2048
-  #     temperature: 0.7
+  #     api_key: "your-hf-api-key"
+  #     max_tokens: 4096
 
-# ============================================================================
-# CUSTOM ENDPOINTS AND PROXY CONFIGURATION
-# ============================================================================
-# Use these examples for custom setups, proxy servers, or local deployments
+  # ============================================================================
+  # CUSTOM ENDPOINTS AND PROXY CONFIGURATION
+  # ============================================================================
+  # - model_name: corporate-proxy
+  #   api_format: chat_completion
+  #   litellm_params:
+  #     model: openai/your-model-name
+  #     api_key: "your-proxy-api-key"
+  #     api_base: "https://corporate-proxy.example.com/v1"
+  #     max_tokens: 4096
 
-# Example: Corporate proxy server
-# - model_name: gpt-4-corporate
-#   litellm_params:
-#     model: openai/gpt-4
-#     api_key: "sk-your-api-key"  # REPLACE WITH YOUR KEY
-#     # Custom OpenAI-compatible endpoint
-#     api_base: "https://corporate-proxy.example.com/v1"
-#     max_tokens: 2048
-#     temperature: 0.7
+  # - model_name: local-vllm
+  #   api_format: chat_completion
+  #   litellm_params:
+  #     model: openai/deepseek-ai/DeepSeek-R2-Distill-Qwen-32B
+  #     api_key: "dummy-key"
+  #     api_base: "http://localhost:8000/v1"
+  #     max_tokens: 4096
 
-# Example: Local LLM server (Ollama, LM Studio, vLLM, etc.)
-# - model_name: local-llama
-#   api_format: chat_completion  # For servers without /responses
-#   litellm_params:
-#     # Local servers often use OpenAI-compatible format
-#     model: openai/llama-2-7b-chat
-#     # Local servers often accept any API key
-#     api_key: "dummy-key"
-#     # Your local server endpoint
-#     api_base: "http://localhost:8080/v1"
-#     max_tokens: 2048
-#     temperature: 0.7
+  # - model_name: claude-custom
+  #   litellm_params:
+  #     model: anthropic/claude-opus-5
+  #     api_key: "your-anthropic-api-key"
+  #     api_base: "https://custom-anthropic.example.com/v1"
+  #     max_tokens: 8192
 
-# Example: Custom Anthropic endpoint
-# - model_name: claude-custom
-#   litellm_params:
-#     model: anthropic/claude-3-5-sonnet-20241022
-#     api_key: "sk-ant-your-api-key"  # REPLACE WITH YOUR KEY
-#     # Custom Anthropic-compatible endpoint
-#     api_base: "https://custom-anthropic.example.com/v1"
-#     max_tokens: 4096
-#     temperature: 0.7
-
-# ============================================================================
-# ADVANCED CONFIGURATION OPTIONS
-# ============================================================================
-# For more providers, please refer to the LiteLLM docs: https://docs.litellm.ai/docs/providers
+# For more providers, see https://docs.litellm.ai/docs/providers

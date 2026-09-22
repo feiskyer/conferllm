@@ -26,10 +26,10 @@ Doctor reports safe package/runtime metadata, configuration parse state, aliases
   "ok": false,
   "error": {
     "code": "model_not_found",
-    "message": "Model 'vision' not found. Available models: gpt-4o, claude-3-5-sonnet",
+    "message": "Model 'vision' not found. Available models: gpt-6-astra, claude-opus-5, DeepSeek-V4.1-Flash",
     "details": {
       "model": "vision",
-      "available_models": ["gpt-4o", "claude-3-5-sonnet"]
+      "available_models": ["gpt-6-astra", "claude-opus-5", "DeepSeek-V4.1-Flash"]
     }
   }
 }
@@ -65,7 +65,7 @@ Report the code, concise message, selected alias or session ID when known, and s
 - **Missing alias (`model_not_found`):** inspect `conferllm models --json`; choose an available alias or ask the user. Do not invent or silently substitute a model.
 - **Capability or image-limit mismatch:** explain the rejected input or replayed-history constraint. Do not silently omit images, drop history, change limits, or switch models.
 - **Session/artifact corruption:** stop the affected continuation or read, preserve the files, and report the failure. Do not rewrite private storage.
-- **Provider error:** it can represent an upstream failure, a wrong API format for the endpoint/model, malformed tool calls, incomplete Responses output, or an image download failure. Do not assume it is an authentication problem. OpenAI endpoints default to Responses; older endpoints can explicitly select model-level `api_format: chat_completion`.
+- **Provider error:** it can represent an upstream failure, a wrong API format for the endpoint/model, malformed tool calls, incomplete Responses output, or an image download failure. Do not assume it is an authentication problem. OpenAI endpoints default to Responses; older endpoints can explicitly select model-level `api_format: chat_completion`. GPT-6 Astra tool calling requires Responses.
 - **Tool error results:** missing files/executables, invalid arguments, and command failures are returned to the model so it can correct them within the same turn. PowerShell is not installed automatically.
 - **Tool-round limit:** the turn exceeded 1000 rounds. Check scope and side effects before asking the model to continue the task.
 

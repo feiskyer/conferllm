@@ -16,6 +16,7 @@ from .chat import ChatResult, ChatService
 from .client import LLMClient
 from .config import ConferLLMConfig
 from .errors import normalize_error
+from .progress import cli_logging
 from .server import Transport, run_server
 from .session import SessionListWarning, SessionMetadata, SessionStore
 
@@ -340,109 +341,104 @@ def run_cli(
         parser.print_help(file=stdout)
         return 0
 
-    logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        stream=stderr,
-    )
-    logging.getLogger().setLevel(getattr(logging, args.log_level))
-    json_errors = bool(getattr(args, "json", False))
     previous_logging_disable = logging.root.manager.disable
-    if json_errors:
-        # Runtime error JSON owns stderr in machine mode. Library log records
-        # must not precede the envelope and make it impossible to parse.
-        logging.disable(logging.CRITICAL)
+    with cli_logging(stderr, getattr(logging, args.log_level)):
+        json_errors = bool(getattr(args, "json", False))
+        if json_errors:
+            # Runtime error JSON owns stderr in machine mode. Library log records
+            # must not precede the envelope and make it impossible to parse.
+            logging.disable(logging.CRITICAL)
 
-    try:
-        if args.command == "serve":
-            run_server(
-                config_path=args.config,
-                transport=cast(Transport, args.transport),
-                host=args.host,
-                port=args.port,
-                log_level=args.log_level,
-            )
-            return 0
-
-        if args.command == "sessions":
-            listing = _load_session_store(args.config).list_sessions_detailed(
-                query=args.query,
-                model=args.model,
-                since=args.since,
-                until=args.until,
-                limit=args.limit,
-            )
-            _print_sessions(
-                listing.sessions,
-                listing.warnings,
-                stdout,
-                stderr,
-                as_json=args.json,
-            )
-            return 0
-
-        if args.command == "skill":
-            result = _install_skill(
-                target=args.target,
-                destination=args.destination,
-                force=args.force,
-            )
-            _print_command_result(result, stdout, as_json=False)
-            return 0
-
-        if args.command == "doctor":
-            result = _run_doctor(args.config)
-            _print_command_result(result, stdout, as_json=args.json)
-            return 1 if result.get("ok") is False else 0
-
-        client = _load_client(args.config)
-
-        if args.command == "models":
-            models = client.list_models()
-            if args.json:
-                _print_json(models, stdout)
-            else:
-                for model in models:
-                    print(model, file=stdout)
-            return 0
-
-        if args.command == "model-info":
-            _print_json(client.get_model_info(args.model), stdout)
-            return 0
-
-        if args.command == "chat":
-            result = ChatService(client).chat(
-                _read_prompt(args),
-                model=args.model,
-                session_id=args.session,
-                name=args.name,
-                images=args.image,
-                image_output_dir=args.image_output_dir,
-                include_raw_response=args.include_raw_response,
-            )
-            if args.json:
-                _print_json(
-                    result.to_dict(include_local_paths=True),
-                    stdout,
+        try:
+            if args.command == "serve":
+                run_server(
+                    config_path=args.config,
+                    transport=cast(Transport, args.transport),
+                    host=args.host,
+                    port=args.port,
+                    log_level=args.log_level,
                 )
-            else:
-                _print_chat_result(result, stdout, stderr)
-            return 0
+                return 0
 
-        parser.error(f"Unknown command: {args.command}")
-    except KeyboardInterrupt:
-        print("conferllm: interrupted", file=stderr)
-        return 130
-    except Exception as error:
-        public_error = normalize_error(error)
-        if json_errors:
-            _print_json(public_error.to_dict(), stderr)
-        else:
-            print(f"conferllm: error: {public_error.message}", file=stderr)
-        return 1
-    finally:
-        if json_errors:
-            logging.disable(previous_logging_disable)
+            if args.command == "sessions":
+                listing = _load_session_store(args.config).list_sessions_detailed(
+                    query=args.query,
+                    model=args.model,
+                    since=args.since,
+                    until=args.until,
+                    limit=args.limit,
+                )
+                _print_sessions(
+                    listing.sessions,
+                    listing.warnings,
+                    stdout,
+                    stderr,
+                    as_json=args.json,
+                )
+                return 0
+
+            if args.command == "skill":
+                result = _install_skill(
+                    target=args.target,
+                    destination=args.destination,
+                    force=args.force,
+                )
+                _print_command_result(result, stdout, as_json=False)
+                return 0
+
+            if args.command == "doctor":
+                result = _run_doctor(args.config)
+                _print_command_result(result, stdout, as_json=args.json)
+                return 1 if result.get("ok") is False else 0
+
+            client = _load_client(args.config)
+
+            if args.command == "models":
+                models = client.list_models()
+                if args.json:
+                    _print_json(models, stdout)
+                else:
+                    for model in models:
+                        print(model, file=stdout)
+                return 0
+
+            if args.command == "model-info":
+                _print_json(client.get_model_info(args.model), stdout)
+                return 0
+
+            if args.command == "chat":
+                result = ChatService(client).chat(
+                    _read_prompt(args),
+                    model=args.model,
+                    session_id=args.session,
+                    name=args.name,
+                    images=args.image,
+                    image_output_dir=args.image_output_dir,
+                    include_raw_response=args.include_raw_response,
+                )
+                if args.json:
+                    _print_json(
+                        result.to_dict(include_local_paths=True),
+                        stdout,
+                    )
+                else:
+                    _print_chat_result(result, stdout, stderr)
+                return 0
+
+            parser.error(f"Unknown command: {args.command}")
+        except KeyboardInterrupt:
+            print("conferllm: interrupted", file=stderr)
+            return 130
+        except Exception as error:
+            public_error = normalize_error(error)
+            if json_errors:
+                _print_json(public_error.to_dict(), stderr)
+            else:
+                print(f"conferllm: error: {public_error.message}", file=stderr)
+            return 1
+        finally:
+            if json_errors:
+                logging.disable(previous_logging_disable)
 
 
 def main() -> None:

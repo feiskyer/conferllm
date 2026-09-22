@@ -40,7 +40,7 @@ fi
 chmod 600 ~/.conferllm/config.yaml
 ```
 
-Replace placeholder credentials for the models you want to use and remove unused entries. The example includes the `gpt-4o` alias used throughout the README. Model IDs are examples, not a guarantee of provider availability. The example file is part of the source checkout, not installed beside the CLI.
+Replace placeholder credentials for the models you want to use and remove unused entries. The example includes the `gpt-6-astra` and `claude-opus-5` aliases used throughout the README. Model IDs are examples, not a guarantee of provider availability. The example file is part of the source checkout, not installed beside the CLI.
 
 Each `model_name` must be non-empty and unique. It is the local alias passed to `--model`, not necessarily the provider's model ID. `litellm_params.model` is required and identifies the provider model.
 
@@ -90,7 +90,7 @@ Request `--json` for scripts and agents. The stable chat response envelope is `c
   "session": {
     "id": "20260905-0123456789abcdef0123456789abcdef",
     "name": "Raft notes",
-    "model": "gpt-4o",
+    "model": "gpt-6-astra",
     "turn": 1
   },
   "message": {
@@ -115,7 +115,7 @@ Without `--json`, output includes the session ID, name, answer, and output-image
 ```bash
 conferllm sessions list
 conferllm sessions list --query raft --json
-conferllm sessions list --model gpt-4o --since 2026-09-01 --limit 20 --json
+conferllm sessions list --model gpt-6-astra --since 2026-09-01 --limit 20 --json
 ```
 
 Filters combine with AND semantics. `--query` matches the ID or name without case sensitivity; model aliases match exactly. `--since` and `--until` are inclusive creation dates. The default limit is 50; `--limit 0` is unlimited. Listing searches metadata, not message bodies, and reports corrupt headers as warnings without hiding unrelated valid sessions.
@@ -236,7 +236,7 @@ Start with diagnostics that do not print configuration values:
 ```bash
 conferllm doctor --json
 conferllm models --json
-conferllm model-info gpt-4o
+conferllm model-info gpt-6-astra
 ```
 
 Doctor reports safe metadata and suggested next steps. It exits nonzero when configuration is missing, invalid, or has no model aliases, while still returning its diagnostic report.

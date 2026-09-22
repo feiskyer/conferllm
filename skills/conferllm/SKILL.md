@@ -5,7 +5,11 @@ description: Query locally configured AI models through ConferLLM. Use for anoth
 
 # ConferLLM Agent Skill
 
-Use the `conferllm` CLI to consult the user's configured models (e.g., DeepSeek R1, GPT-4o, Claude 3.5 Sonnet, Gemini 1.5 Pro, local Ollama models). The CLI executes locally, dispatching requests to configured provider endpoints with persistent session state and native host tools.
+Use the `conferllm` CLI to consult the user's configured models (e.g., GPT-6 Astra, Claude Opus/Sonnet, DeepSeek, Gemini 3.8 Flash, local Qwen). The CLI executes locally, dispatching requests to configured provider endpoints with persistent session state and native host tools.
+
+Every chat enables native shell, PowerShell, and file tools without approval prompts or a sandbox. The model can read or modify host files and execute commands with the OS user's access. Keep the delegated task within the user's authorized scope; for an opinion/review, explicitly request no file changes or command execution. This instruction guides the model but is not an enforced restriction. Native tool calling must be supported by the provider; there is no text fallback.
+
+The `openai` provider uses Responses by default. Model-level `api_format: chat_completion` selects an older OpenAI-compatible endpoint explicitly; other providers are unchanged. Inspect `api_format` and `uses_responses_api` via `model-info` rather than reading configuration contents. GPT-6 Astra tool calling requires Responses.
 
 ## Critical Safety & Operational Rules
 
@@ -83,7 +87,7 @@ Save generated images to a specific directory using `--image-output-dir ./output
   "session": {
     "id": "20260905-0123456789abcdef0123456789abcdef",
     "name": "Prompt title",
-    "model": "gpt-4o",
+    "model": "gpt-6-astra",
     "turn": 1
   },
   "message": {

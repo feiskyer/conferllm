@@ -27,7 +27,7 @@ The response contains ordered `message.content` and `artifacts` arrays:
   "session": {
     "id": "20260905-0123456789abcdef0123456789abcdef",
     "name": "Compare screenshots",
-    "model": "gpt-4o",
+    "model": "gpt-6-astra",
     "turn": 1
   },
   "message": {
