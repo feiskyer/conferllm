@@ -40,7 +40,7 @@ from .tools import ToolRuntime
 from .tools.common import check_cancelled
 
 CHAT_RESPONSE_SCHEMA_VERSION = "conferllm.chat.response.v1"
-MAX_TOOL_ROUNDS = 32
+MAX_TOOL_ROUNDS = 1000
 DEFAULT_IMAGE_OUTPUT_DIR = Path("/tmp")
 
 

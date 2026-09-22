@@ -1,14 +1,51 @@
 # ConferLLM
 
-ConferLLM is a minimalist agent harness with multi-model support and only essential file and shell tools.
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![MCP Ready](https://img.shields.io/badge/MCP-2.x-green.svg)](https://modelcontextprotocol.io/)
+[![uv](https://img.shields.io/badge/installed%20with-uv-purple.svg)](https://docs.astral.sh/uv/)
 
-Run models with minimal prompts and tools to get the most out of their capabilities.
+ConferLLM is a minimalist agent harness with multi-model support and essential host tools. It enables AI agents (such as Claude Code, Codex, Cursor, and Cline) and human developers to consult, delegate, and collaborate across models on complex tasks with full session state and local execution capabilities.
 
-Use it as an Agent Skill or MCP server to help Claude Code, Codex, and other agents collaborate across models on complex tasks.
+```text
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  AI Agent / Developer (Claude Code, Codex, Cursor, CLI, Script)             │
+└──────────────────────────────────────┬───────────────────────────────────────┘
+                                       │ CLI (--json) or MCP (stdio/sse/http)
+                                       ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  ConferLLM Engine                                                            │
+│  • Stateful Session Store (atomic JSONL + fcntl locking)                     │
+│  • Self-Correcting Tool Runtime (up to 1,000 tool rounds per turn)           │
+│  • Multimodal Pipeline (artifact tracking + auto-saving)                     │
+└──────────────┬───────────────────────────────────────────────┬───────────────┘
+               │ Native Tool Calls                             │ LiteLLM /
+               ▼                                               │ Responses API
+┌──────────────────────────────┐                ┌──────────────▼───────────────┐
+│ Host Tools (Unrestricted)    │                │ Configured AI Models         │
+│ • Shell: bash, pwsh, git     │                │ • OpenAI (Responses / Chat)  │
+│ • Background: output, kill   │                │ • Anthropic Claude           │
+│ • Files: read, write, edit,  │                │ • DeepSeek R1 / Reasoner     │
+│   append, list_directory     │                │ • Local Ollama / vLLM        │
+└──────────────────────────────┘                └──────────────────────────────┘
+```
 
-## Quick start
+---
 
-Requires Python 3.10+ and API access to a model.
+## Highlights
+
+- **Multi-Model Delegation:** Connect to 100+ providers via LiteLLM (OpenAI, Anthropic, Gemini, DeepSeek, local Ollama, Azure, Bedrock, etc.) using clean local aliases.
+- **10 Native Built-in Host Tools:** Delegated models get access to shell (`run_shell`, `run_powershell`, `shell_output`, `shell_kill`, `git_command`) and filesystem tools (`read_file`, `write_file`, `append_file`, `edit_file`, `list_directory`) without extra flags.
+- **Self-Correcting Tool Loop:** Tool execution errors are returned as native results so the model can inspect errors and self-correct across up to 1,000 rounds in a single turn.
+- **Persistent Multi-Turn Sessions:** Conversations are stored as atomic JSONL files with process-safe locking. Resume any session at any time with `--session <id>`.
+- **First-Class Multimodal Support:** Send input images (`--image`); model-generated images are automatically saved to disk, linked via URIs, and safely replayed in history.
+- **Agent-Ready Surfaces:** Dual interface out of the box—bundled **Agent Skill** (`conferllm skill install`) for Claude Code/Codex and standard **MCP Server** (`conferllm serve`) for Claude Desktop/Cursor/Cline.
+
+---
+
+## Quick Start
+
+Requires Python 3.10+ on macOS or Linux (POSIX file locking required; native Windows is not supported).
 
 ### 1. Install
 
@@ -18,23 +55,33 @@ Install with [uv](https://docs.astral.sh/uv/getting-started/installation/) (reco
 uv tool install conferllm
 ```
 
-Alternatively, use pip in an activated Python virtual environment:
+Or install with pip in an activated virtual environment:
 
 ```bash
 pip install conferllm
 ```
 
-If your shell cannot find the uv-installed command, run `uv tool update-shell` and reopen the terminal. See the [installation reference](docs/reference.md#installation) for details.
+Verify the installation:
 
-### 2. Configure one model
+```bash
+conferllm --version
+conferllm doctor --json
+```
 
-Create the configuration directory:
+*Note:* If the command is not found after `uv tool install`, run `uv tool update-shell` and restart your terminal.
+
+### 2. Configure Models
+
+Create the configuration directory and file:
 
 ```bash
 mkdir -p ~/.conferllm
+chmod 700 ~/.conferllm
+touch ~/.conferllm/config.yaml
+chmod 600 ~/.conferllm/config.yaml
 ```
 
-Create `~/.conferllm/config.yaml` with the following content and replace the example API key:
+Populate `~/.conferllm/config.yaml` with your preferred providers. For example:
 
 ```yaml
 model_list:
@@ -44,87 +91,75 @@ model_list:
       output_modalities: [text]
     litellm_params:
       model: openai/gpt-4o
-      api_key: "replace-with-your-key"
+      api_key: "your-openai-key"
+
+  - model_name: claude-3-5-sonnet
+    capabilities:
+      input_modalities: [text, image]
+      output_modalities: [text]
+    litellm_params:
+      model: anthropic/claude-3-5-sonnet-20241022
+      api_key: "your-anthropic-key"
+
+  - model_name: deepseek-r1
+    capabilities:
+      input_modalities: [text]
+      output_modalities: [text]
+    litellm_params:
+      model: deepseek/deepseek-reasoner
+      api_key: "your-deepseek-key"
+
+  - model_name: local-llama
+    litellm_params:
+      model: ollama_chat/llama3.2
+      api_base: "http://localhost:11434"
 ```
 
-`model_name` is the alias used in commands. For more models and endpoints, see [config_example.yaml](config_example.yaml).
+*Tip:* See [config_example.yaml](config_example.yaml) for more provider templates including Gemini, Mistral, Azure, and AWS Bedrock.
 
-OpenAI models use Responses by default. For older compatible endpoints, add `api_format: chat_completion` beside `model_name`.
-
-### 3. Ask a question
+### 3. Run Your First Chat
 
 ```bash
-conferllm chat --model gpt-4o --prompt "Explain Raft leader election."
+conferllm chat --model gpt-4o --prompt "Explain Raft leader election in two sentences."
 ```
 
-The output includes an answer and a session ID. Keep the ID to ask follow-up questions with the conversation history restored.
+Output includes the answer and a reusable `Session` ID:
 
-## Common tasks
+```text
+Session: 20260905-0123456789abcdef0123456789abcdef
+Name: Explain Raft leader election in two sentences.
 
-### Continue or find a conversation
-
-Replace `SESSION_ID` with the ID returned by your chat:
-
-```bash
-conferllm chat --session SESSION_ID --prompt "Now compare it with Paxos."
-conferllm sessions list
-conferllm sessions list --query raft --json
+Raft leader election ensures a cluster chooses a single leader through randomized election timeouts and majority voting. Nodes transition to candidates, request votes, and become leaders upon securing a majority.
 ```
 
-A session keeps its original model. To compare models, start a separate chat for each configured alias using the same prompt. Use `--name "Raft notes"` when creating a chat to give it a memorable name.
+---
 
-### Use JSON or a prompt file
+## AI Agent Integration
 
-```bash
-conferllm chat --model gpt-4o --prompt "Explain Raft leader election." --json
-conferllm chat --model gpt-4o --prompt-file ./prompt.md --json
-```
+ConferLLM is designed from the ground up for agent consumption. AI agents use ConferLLM to obtain attributed second opinions, delegate specialized tasks (e.g., deep math proofs to DeepSeek R1, visual analysis to GPT-4o, or private offline tasks to local Ollama), and let external models interact with the host repository.
 
-Write a long or multiline prompt into `prompt.md` before using `--prompt-file`. JSON output includes `session.id`, `message.text`, `artifacts`, and `warnings`. See the [response and error reference](docs/reference.md#json-output) for the full contract.
+### Option A: Use as an Agent Skill (Claude Code & Codex)
 
-### Include images
-
-With a model that supports images, repeat `--image` to attach your files in order:
+Install the bundled skill into your agent's skill directory:
 
 ```bash
-conferllm chat \
-  --model gpt-4o \
-  --prompt "Compare these screenshots." \
-  --image ./before.png \
-  --image ./after.png \
-  --json
-```
-
-Images are copied into the session so follow-ups can reuse them. Generated images are saved to `/tmp` by default; use `--image-output-dir ./output` to choose another directory. Responses replace image data with saved file paths in `message.content`, `message.text`, and output artifacts' `saved_path`. See [image handling](docs/reference.md#images).
-
-### Work with local files and commands
-
-No extra flag or per-model setting is needed:
-
-```bash
-conferllm chat \
-  --model gpt-4o \
-  --prompt "Read README.md and list the files in this directory." \
-  --json
-```
-
-Relative paths use the command's working directory. PowerShell requires an installed `pwsh` or `powershell` executable. See [built-in tools](docs/reference.md#built-in-tools).
-
-## Use from an agent
-
-Install the bundled Skill into `~/.agents/skills/conferllm`:
-
-```bash
+# For Claude Code and general agents (~/.agents/skills/conferllm):
 conferllm skill install
+
+# For Codex (~/.codex/skills/conferllm):
+conferllm skill install --target codex
 ```
 
-For `~/.codex/skills/conferllm`, use `conferllm skill install --target codex`. Then ask your agent to use ConferLLM to delegate tasks to other models.
+Once installed, your agent automatically knows how to discover configured models, run queries with `--json`, parse outputs, and continue conversations.
 
-See [Skill installation details](docs/reference.md#agent-skill) for custom destinations and updates.
+**Example agent instruction:**
+> *"Use $conferllm to ask deepseek-r1 to review our Raft consensus implementation in src/consensus.py and check for election split-vote edge cases."*
 
-## Use as an MCP server
+### Option B: Use as an MCP Server (Claude Desktop, Cursor, Cline, Windsurf)
 
-The stdio server starts with `conferllm serve`. For clients that use an `mcpServers` configuration, add:
+ConferLLM includes a full-featured MCP (Model Context Protocol) server over stdio, SSE, or streamable HTTP.
+
+Add to your MCP configuration (e.g. `claude_desktop_config.json` or Cursor Settings):
 
 ```json
 {
@@ -137,32 +172,214 @@ The stdio server starts with `conferllm serve`. For clients that use an `mcpServ
 }
 ```
 
-The client launches the server; you do not need to start it separately. If the client cannot find the command, use the absolute path from `command -v conferllm`. See the [MCP reference](docs/reference.md#mcp-server) for tools and transports.
+#### MCP Tools Provided
 
-## Configuration and troubleshooting
+| MCP Tool | Description |
+| --- | --- |
+| `create_chat(message, model, name=None, images=None, ...)` | Start a new conversation with host shell and file tools enabled. |
+| `continue_chat(message, session_id, images=None, ...)` | Continue an existing session with conversation history restored. |
+| `list_sessions(query=None, model=None, since=None, until=None, limit=50)` | Search past sessions by ID, name, model, or creation date. |
+| `list_models()` | Return all configured model aliases. |
+| `get_model_info(model)` | Return declared capabilities, modalities, and format details. |
 
-Check configuration and available models:
+Generated images are accessible via the MCP resource `conferllm://sessions/{session_id}/artifacts/{artifact_id}`.
+
+---
+
+## Common Workflows
+
+### 1. Multi-Turn Conversation (Follow-Up)
+
+Pass `--session` with the returned session ID to continue with full context:
+
+```bash
+conferllm chat --session 20260905-0123456789abcdef0123456789abcdef --prompt "Now compare it with Paxos."
+```
+
+*Note:* A session retains its original model alias. History and past tool calls are restored automatically without re-executing old commands.
+
+### 2. Machine-Readable JSON Mode
+
+AI agents and scripts should always pass `--json` for predictable parsing:
+
+```bash
+conferllm chat --model gpt-4o --prompt "Explain Raft." --json
+```
+
+**JSON Response Contract (`conferllm.chat.response.v1`):**
+
+```json
+{
+  "schema_version": "conferllm.chat.response.v1",
+  "ok": true,
+  "session": {
+    "id": "20260905-0123456789abcdef0123456789abcdef",
+    "name": "Explain Raft.",
+    "model": "gpt-4o",
+    "turn": 1
+  },
+  "message": {
+    "text": "Raft is a consensus algorithm...",
+    "content": [
+      {
+        "type": "text",
+        "text": "Raft is a consensus algorithm..."
+      }
+    ]
+  },
+  "artifacts": [],
+  "warnings": []
+}
+```
+
+Key fields:
+- `session.id`: Unique session identifier to pass to `--session` on follow-up.
+- `session.turn`: Turn counter (starts at 1).
+- `message.text`: The complete assistant answer (with image payloads replaced by saved paths).
+- `artifacts`: List of turn artifacts (images input/output, paths, mime types, hashes).
+- `warnings`: Non-fatal notices (e.g. background processes stopped at turn end).
+
+### 3. Long Prompts from Files
+
+For complex multi-line prompts, markdown instructions, or code snippets:
+
+```bash
+conferllm chat --model deepseek-r1 --prompt-file ./review_prompt.md --json
+```
+
+### 4. Multimodal Analysis (Images)
+
+Attach one or more images using repeated `--image` flags:
+
+```bash
+conferllm chat \
+  --model gpt-4o \
+  --prompt "Analyze the architectural bottleneck shown in this diagram." \
+  --image ./architecture.png \
+  --json
+```
+
+- Images are validated against model capabilities and copied into session-owned storage for safe replay across turns.
+- Model-generated images are automatically written to `--image-output-dir` (defaults to `/tmp`) and listed in `artifacts` with `direction: "output"`.
+
+### 5. Local File and Shell Operations
+
+Delegated models have native access to host files and commands without extra flags:
+
+```bash
+conferllm chat \
+  --model gpt-4o \
+  --prompt "Read pyproject.toml and tell me what dependencies need attention." \
+  --json
+```
+
+*Safety note:* If you want an opinion or review only without risking file modifications, include in your prompt: *"Provide an analysis only; do not edit files or execute modifying commands."*
+
+### 6. Search and Inspect Past Sessions
+
+```bash
+# List recent sessions
+conferllm sessions list
+
+# Search by keyword in name or ID
+conferllm sessions list --query raft --json
+
+# Filter by model alias and date range
+conferllm sessions list --model gpt-4o --since 2026-09-01 --limit 10 --json
+```
+
+### 7. Compare Models Side-by-Side
+
+To compare how different models handle the same challenge, start independent chats:
+
+```bash
+conferllm chat --model deepseek-r1 --prompt-file ./challenge.md --json
+conferllm chat --model claude-3-5-sonnet --prompt-file ./challenge.md --json
+```
+
+---
+
+## Built-in Host Tools
+
+ConferLLM provides every configured model with 10 native tools. Native tool calls execute on the host machine with the user's OS permissions:
+
+| Tool | Purpose | Key Parameters |
+| --- | --- | --- |
+| `run_shell` | Run bash/sh commands | `command`, `timeout` (1–600s, def 120s), `cwd`, `run_in_background` |
+| `run_powershell` | Run PowerShell commands | `command`, `timeout`, `cwd`, `run_in_background` |
+| `shell_output` | Read unread output from a background command | `shell_id`, `filter_str` (optional regex) |
+| `shell_kill` | Terminate an owned background process group | `shell_id` |
+| `git_command` | Execute git commands | `command`, `timeout` (1–600s, def 60s), `cwd` |
+| `read_file` | Read UTF-8 file with 1-indexed line numbers | `path`, `offset` (def 1), `limit` (def 2000 lines) |
+| `write_file` | Create or atomically overwrite a file | `path`, `content` (up to 10 MiB) |
+| `append_file` | Append content to a file | `path`, `content` |
+| `edit_file` | Exact unique string replacement | `path`, `old_string`, `new_string`, `replace_all` (def false) |
+| `list_directory` | Directory listing with glob exclusions | `path` (def `.`), `ignore` (patterns), `limit` (def 1000) |
+
+### Tool Execution Rules
+- **No confirmation gates:** Operations execute immediately to enable seamless multi-step autonomous problem solving.
+- **Self-correction:** Missing files, invalid arguments, and command errors return as structured tool results so the model can rectify errors itself.
+- **Turn boundaries:** Background processes belong to the turn and are cleanly stopped at turn completion. Up to 1,000 tool rounds are permitted per turn.
+
+---
+
+## Diagnostics & Troubleshooting
+
+Run doctor to inspect system status, configuration, models, and permissions without exposing credentials:
 
 ```bash
 conferllm doctor --json
+```
+
+List available model aliases:
+
+```bash
 conferllm models --json
+```
+
+Inspect non-secret details of a specific model alias:
+
+```bash
 conferllm model-info gpt-4o
 ```
 
-Use `--config PATH` with a command to select another configuration file. If a model is not found, use an alias listed by `conferllm models`. See [configuration options](docs/reference.md#configuration) and [troubleshooting](docs/reference.md#troubleshooting).
+### Common Issues
 
-## Development and contributing
+- **`command not found: conferllm`:** Run `uv tool update-shell` and restart terminal, or check your virtualenv `PATH`.
+- **`model_not_found`:** Run `conferllm models` to see available aliases. Model aliases in `config.yaml` are the identifiers used on the CLI, not raw provider names.
+- **`configuration_error`:** Verify YAML syntax in `~/.conferllm/config.yaml`. Permissions should be `0700` for directory and `0600` for the configuration file.
+- **Provider Responses API vs Chat Completions:** OpenAI models use Responses by default. For legacy OpenAI-compatible endpoints that only support `/chat/completions`, add `api_format: chat_completion` to the model config.
 
-Report bugs in [GitHub Issues](https://github.com/feiskyer/mcp-ai-hub/issues); pull requests are welcome too. Include reproduction steps and relevant output. See the [source setup and development checks](docs/reference.md#development).
+---
 
-To keep an installed CLI linked to this checkout while editing:
+## Development
+
+```bash
+# Clone repository
+git clone https://github.com/feiskyer/mcp-ai-hub.git conferllm
+cd conferllm
+
+# Setup development environment
+uv sync --extra dev
+
+# Run quality checks & test suite
+uv run ruff format --check .
+uv run ruff check .
+uv run mypy src/
+uv run pytest
+
+# Build packages
+uv build
+```
+
+To link an editable checkout globally to your tool environment:
 
 ```bash
 uv tool install --editable . --force
 ```
 
-This replaces an existing ConferLLM tool install. Python source edits take effect on the next invocation; restart any running server after edits. Reinstall when dependencies or command entry points change.
+---
 
 ## License
 
-ConferLLM is released under the [MIT License](LICENSE).
+ConferLLM is open source software released under the [MIT License](LICENSE).

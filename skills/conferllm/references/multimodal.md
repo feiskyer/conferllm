@@ -18,15 +18,46 @@ conferllm chat \
 
 Use only files supplied or authorized for the task, and preserve their order. ConferLLM copies accepted inputs into session-owned storage so later turns reuse those copies rather than the original files.
 
-The response contains ordered `message.content` and `artifacts` arrays. `artifacts` describes the current turn and may include both input and output images; select `direction == "output"` when identifying generated images. Image blocks have `type: image_url`, an `artifact_id`, and an absolute saved path in `image_url.url`. `message.text` also contains saved paths in place of image data, including image-only replies. Each artifact retains a `conferllm://sessions/.../artifacts/...` resource URI.
+The response contains ordered `message.content` and `artifacts` arrays:
 
-Generated images are automatically saved to `/tmp` when no output directory is provided. Include `--image-output-dir PATH` for a task-authorized, durable location outside private session storage. Use output artifacts' `saved_path`; CLI JSON also retains `exported_path` and canonical `local_path` for compatibility. Do not inspect private session storage directly. If export failed and `saved_path` points into private storage, report the warning and use an MCP resource read rather than opening that private file.
+```json
+{
+  "schema_version": "conferllm.chat.response.v1",
+  "ok": true,
+  "session": {
+    "id": "20260905-0123456789abcdef0123456789abcdef",
+    "name": "Compare screenshots",
+    "model": "gpt-4o",
+    "turn": 1
+  },
+  "message": {
+    "text": "The differences are...\n/tmp/output-diagram.png",
+    "content": [
+      {"type": "text", "text": "The differences are..."},
+      {"type": "image_url", "image_url": {"url": "/tmp/output-diagram.png"}, "artifact_id": "0123456789abcdef"}
+    ]
+  },
+  "artifacts": [
+    {
+      "id": "0123456789abcdef",
+      "direction": "output",
+      "mime_type": "image/png",
+      "size_bytes": 1048576,
+      "saved_path": "/tmp/output-diagram.png",
+      "uri": "conferllm://sessions/20260905-0123456789abcdef0123456789abcdef/artifacts/0123456789abcdef"
+    }
+  ],
+  "warnings": []
+}
+```
 
-There may be zero, one, or many generated images, depending on the model and response. All candidates and supported content blocks are processed. Embedded data URLs, base64 blocks, native image-generation items, and HTTP(S) image outputs are saved; remote downloads are bounded and do not receive provider credentials. Native tool calls execute automatically, and images produced across tool rounds receive distinct artifact IDs. Tool argument strings and encrypted reasoning are not treated as image output.
+- **Output images:** filter `artifacts` where `direction == "output"`. Read `saved_path` for the local absolute file path.
+- **`message.text`:** automatically replaces raw image payloads with saved file paths, separating text and paths with newlines.
+- **`--image-output-dir PATH`:** specify a dedicated directory for generated images. When omitted, images default to `/tmp`.
 
-Image generation success does not imply reliable instruction following or tool use. An image model may return another image even when a follow-up requests text; inspect the actual content types and report what it returned.
+Embedded data URLs, base64 blocks, native Responses image-generation items, and HTTP(S) image outputs are saved. Remote downloads are bounded (20 MiB max) and do not receive provider credentials.
 
-An export warning does not undo the committed chat or remove its canonical artifacts. Do not repeat the model call to repair an export. The CLI has no standalone artifact-read or re-export command; use an available MCP artifact resource, or report the warning and preserved IDs. See [recovery boundaries](errors.md).
+An export warning does not undo the committed chat or remove its canonical artifacts. Do not repeat the model call to repair an export.
 
 ## Continue a multimodal session
 
@@ -40,29 +71,28 @@ conferllm chat \
   --json
 ```
 
-Responses history conversion preserves assistant text phases and supplies generated images as image inputs explicitly attributed to the assistant. This conversion is automatic; do not rebuild the history or reattach old images just to change the API format.
-
-Repeated `--image` values on a continuation are new images for that turn. Never reconstruct history or read JSONL session files. A model's declared image limit also counts input and output images replayed from earlier turns, even when the new turn attaches no images. If a limit is reached, explain it; start a new session only when a fresh context fits the user's intent. Do not silently discard history or switch model aliases.
-
-Application image limits apply to newly attached images. Use `conferllm model-info MODEL` to inspect declared capabilities and effective limits. Do not send images when the declared `input_modalities` excludes `image`; missing capability metadata is not proof of image support.
+- Replayed history automatically attributes previous generated images as assistant inputs.
+- Repeated `--image` values on a continuation are new images for that turn.
+- A model's declared `max_input_images` counts both replayed history images and newly attached images. If a limit is reached, explain it; do not silently drop history or switch models.
+- Inspect effective limits with `conferllm model-info MODEL`. Do not send images to a model whose declared `input_modalities` excludes `image`.
 
 ## MCP image handling
 
-The CLI's `--image` accepts local file paths. MCP image arguments instead accept data URLs or absolute paths on the server's filesystem; a relative path on the client is not a valid MCP image argument.
-
-MCP returns the chat envelope in structured content and its first text block, followed by resource links. Images are not inlined as base64. `saved_path` and image content paths refer to the server host; a remote client should read the artifact URI through MCP when it cannot access that filesystem. Canonical `local_path` and compatibility `exported_path` fields remain omitted from MCP artifact metadata.
+- The CLI's `--image` accepts local filesystem paths.
+- MCP image arguments (`create_chat`, `continue_chat`, `chat`) accept **data URLs** or **absolute paths on the server's filesystem**. Relative client paths are rejected with `invalid_request`.
+- MCP returns the chat envelope in structured content and in its first text block, accompanied by resource links (`conferllm://sessions/{session_id}/artifacts/{artifact_id}`). Generated images are not inlined as base64 over the protocol.
 
 ## Compare models
 
-A session retains its original model alias, not a frozen provider configuration. Do not reconfigure aliases as part of a comparison. Check `provider_model` from `conferllm model-info MODEL`; distinct aliases can point to the same underlying model.
-
-For each requested model, make an independent call with the same prompt and authorized images:
+A session retains its original model alias. To compare models, make independent calls with the same prompt and authorized images:
 
 ```bash
-conferllm chat --model MODEL_A --prompt-file PROMPT --image IMAGE --json
-conferllm chat --model MODEL_B --prompt-file PROMPT --image IMAGE --json
+conferllm chat --model MODEL_A --prompt-file ./prompt.md --image ./input.png --json
+conferllm chat --model MODEL_B --prompt-file ./prompt.md --image ./input.png --json
 ```
 
-`PROMPT` in these examples is a UTF-8 file path. Omit `--image IMAGE` for text-only comparisons. Retain and attribute each returned alias, session ID, answer, and output artifact.
-
-Compare actual returned answers after the requested calls complete or fail. Report failed calls as gaps rather than inventing another model's response. Follow-ups must use the session ID belonging to that model.
+1. Run each model independently and capture JSON output.
+2. Read `message.text` and `session.id` from each response.
+3. Compare actual returned answers and clearly attribute each answer to its respective model alias.
+4. If one model fails, report the error honestly as a gap rather than inventing an answer.
+5. Follow-ups must use the respective session ID belonging to that model.

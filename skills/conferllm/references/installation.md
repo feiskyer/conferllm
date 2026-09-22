@@ -39,7 +39,16 @@ When doctor reports a missing configuration, tell the user to create:
 ~/.conferllm/config.yaml
 ```
 
-The README and repository `config_example.yaml` document the format; the example file is not installed beside the executable. This self-contained template uses the same `gpt-4o` alias as the README:
+Expected permissions are `0700` for the application directory and `0600` for the configuration file:
+
+```bash
+mkdir -p ~/.conferllm
+chmod 700 ~/.conferllm
+touch ~/.conferllm/config.yaml
+chmod 600 ~/.conferllm/config.yaml
+```
+
+The user must supply provider credentials themselves. A self-contained starter template:
 
 ```yaml
 model_list:
@@ -50,36 +59,50 @@ model_list:
     litellm_params:
       model: openai/gpt-4o
       api_key: "replace-with-your-key"
+
+  - model_name: claude-3-5-sonnet
+    capabilities:
+      input_modalities: [text, image]
+      output_modalities: [text]
+    litellm_params:
+      model: anthropic/claude-3-5-sonnet-20241022
+      api_key: "replace-with-your-key"
+
+  - model_name: deepseek-r1
+    capabilities:
+      input_modalities: [text]
+      output_modalities: [text]
+    litellm_params:
+      model: deepseek/deepseek-reasoner
+      api_key: "replace-with-your-key"
+
+  - model_name: local-llama
+    litellm_params:
+      model: ollama_chat/llama3.2
+      api_base: "http://localhost:11434"
 ```
 
-This is an OpenAI example, not a guarantee of account access. The user must select an available provider model and add credentials themselves. Keep aliases unique. Capability declarations describe the intended configuration; they do not probe provider support.
+Each `model_name` is an alias used on the CLI. The user must select an available provider model and add credentials themselves. Keep aliases unique.
 
 Never read, infer, migrate, populate, copy, or print credential values. Do not inspect the configuration file to troubleshoot it; use:
 
 ```bash
 conferllm doctor --json
 conferllm models --json
+conferllm model-info MODEL
 ```
 
-Expected permissions are `0700` for the application directory and `0600` for the configuration file:
-
-```bash
-mkdir -p ~/.conferllm
-chmod 700 ~/.conferllm
-chmod 600 ~/.conferllm/config.yaml
-```
-
-The user should create the configuration file before applying its file permissions. To use a different configuration, pass `--config PATH` consistently to diagnostics, model discovery, chat, and session commands. See [safe diagnostics](errors.md) for report fields and failure handling.
+To use a different configuration, pass `--config PATH` consistently to diagnostics, model discovery, chat, and session commands. See [safe diagnostics](errors.md) for report fields and failure handling.
 
 ## Development installs
 
 Only when the user requests development from a local checkout, run from that checkout's root:
 
 ```bash
-uv tool install --editable .
+uv tool install --editable . --force
 ```
 
-Python source changes take effect on the next invocation; restart a running server after edits. Reinstall after changing dependencies or command entry points. Add `--force` only when replacing an existing tool installation is intended.
+Python source changes take effect on the next invocation; restart a running server after edits. Reinstall after changing dependencies or command entry points.
 
 ## Install or update the Skill
 
@@ -90,8 +113,8 @@ conferllm skill install
 conferllm skill install --target codex
 ```
 
-These are alternatives: the default is `~/.agents/skills/conferllm`; `--target codex` selects `~/.codex/skills/conferllm`. For an exact custom directory, use `--destination PATH`. A custom destination must be a dedicated Skill directory, not the home directory, workspace, package directory, or an ancestor.
+- Default: `~/.agents/skills/conferllm` (used by Claude Code and general agents).
+- `--target codex`: `~/.codex/skills/conferllm`.
+- Custom destination: `conferllm skill install --destination PATH`. A custom destination must be a dedicated Skill directory, not the home directory, workspace, package directory, or an ancestor.
 
-The installer copies the bundle. Updating the Python package does not refresh an already-copied Skill; replacing a different installed copy requires the user's authorization and `--force`.
-
-Check whether the installed directory is a user-managed symlink before replacing it. A symlink to the source bundle already reflects source-file edits. Preserve that link: a forced installation would replace it with a copied directory. An agent that already loaded the previous instructions may need to reload the Skill.
+The installer copies the bundle atomically. Updating the Python package does not refresh an already-copied Skill; replacing a different installed copy requires the user's authorization and `--force`. Check whether the installed directory is a user-managed symlink before replacing it.
