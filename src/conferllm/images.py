@@ -9,9 +9,6 @@ import hashlib
 import logging
 import os
 import re
-import shutil
-import tempfile
-import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -574,65 +571,3 @@ def prepare_image_output_dir(image_path: str | Path | None) -> Path | None:
             f"Failed to create image directory '{output_dir}': {error}"
         ) from error
     return output_dir
-
-
-def _persist_embedded_images(
-    value: Any,
-    output_dir: Path,
-) -> Any:
-    """Persist a complete generated-image batch or leave no final files."""
-    output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=".conferllm-images-", dir=output_dir))
-    staged_to_final: list[tuple[Path, Path]] = []
-    moved: list[Path] = []
-
-    def save_image(payload: ImagePayload, index: int) -> str:
-        filename = f"conferllm_image_{uuid.uuid4().hex}{payload.extension}"
-        staged = staging / filename
-        final = output_dir / filename
-        try:
-            staged.write_bytes(payload.data)
-            staged.chmod(0o600)
-        except OSError as error:
-            raise ImageProcessingError(
-                f"Failed to save generated image {index + 1}: {error}"
-            ) from error
-        staged_to_final.append((staged, final))
-        return str(final)
-
-    try:
-        processed, _ = replace_embedded_image_data(value, save_image)
-        for staged, final in staged_to_final:
-            os.replace(staged, final)
-            moved.append(final)
-            final.chmod(0o600)
-        return processed
-    except Exception:
-        for final in moved:
-            try:
-                final.unlink()
-            except OSError:
-                logger.warning("Unable to remove partial image output: %s", final)
-        raise
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
-
-
-def extract_and_save_base64_images(content: str, output_dir: Path | None = None) -> str:
-    """Replace all embedded image data URLs with safely persisted file paths."""
-    target_dir = output_dir or Path(tempfile.gettempdir())
-    processed = _persist_embedded_images(content, target_dir)
-    if not isinstance(processed, str):  # pragma: no cover - type invariant
-        raise ImageProcessingError("Generated image processing returned invalid text.")
-    return processed
-
-
-def process_response_for_images(
-    response_dict: dict[str, Any], output_dir: Path | None = None
-) -> dict[str, Any]:
-    """Return a copy with every embedded image persisted transactionally."""
-    target_dir = output_dir or Path(tempfile.gettempdir())
-    processed = _persist_embedded_images(response_dict, target_dir)
-    if not isinstance(processed, dict):  # pragma: no cover - type invariant
-        raise ImageProcessingError("Generated image processing returned invalid data.")
-    return processed

@@ -144,7 +144,7 @@ def test_all_candidates_and_native_content_blocks_execute_and_save(
         == paths[-1]
     )
     assert "data:image" not in json.dumps(result.to_dict())
-    history = endpoint.call_args_list[1].kwargs["messages"]
+    history = endpoint.call_args_list[1].kwargs["messages"][1:]  # after system
     assert [call["id"] for call in history[1]["tool_calls"]] == [
         "call_write",
         "call_append",
@@ -206,7 +206,7 @@ def test_responses_text_tools_and_native_image_results_are_all_handled(
     )
     assert all("conferllm_image_generation" not in item for item in replay)
     assert "data:image" not in json.dumps(result.to_dict())
-    envelope = _chat_tool_result(result, service.session_store)
+    envelope = _chat_tool_result(result)
     assert all(item.type != "image" for item in envelope.content)
     assert len([item for item in envelope.content if item.type == "resource_link"]) == 2
     assert all(

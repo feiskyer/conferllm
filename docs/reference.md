@@ -73,6 +73,9 @@ Optional settings:
 
 - `global_system_prompt`: applied to every request.
 - A model's `system_prompt`: overrides the global prompt; `""` disables it.
+- Reasoning shown in progress output: when a model enables reasoning, ConferLLM asks for readable output. OpenAI Responses `reasoning` (or `reasoning_effort`) gets `summary: auto`, and Anthropic `thinking` with type `enabled` or `adaptive` gets `display: summarized`. An explicit `summary` or `display` value, including `null` or `omitted`, is kept. Enabling reasoning itself stays a per-model choice because it changes cost and latency.
+- ConferLLM appends a fixed paragraph after the configured prompt (or sends it alone when none is configured). It tells the delegated model that only its final message is returned to the caller, who cannot answer mid-turn, to finish requested work without asking, to stop and ask only for destructive or out-of-scope decisions, and to make the final message self-contained. The text is `HARNESS_PROMPT` in `src/conferllm/client.py`.
+- A session pins the complete prompt it was created with, so editing either setting affects only new sessions. Providers that bind reasoning to the exact request prefix (such as Claude thinking blocks) keep working after configuration edits. Sessions created before prompt pinning resolve the current setting on every turn.
 - `sessions_dir`: overrides the session root. Relative YAML paths resolve beside the configuration file, independently of the caller's working directory.
 - `image_limits`: limits new images per turn. Defaults are 16 images, 20 MiB per image, and 50 MiB in total.
 - A model's `capabilities`: declares input/output modalities and an optional `max_input_images`. These declarations guide validation, not provider discovery.
@@ -108,7 +111,7 @@ For completion integrations, an in-memory, per-request capture preserves native 
 
 Successful JSON results go to stdout. Runtime failures exit nonzero and write a `conferllm.error.v1` envelope to stderr. Library logging is suppressed in JSON mode so it does not contaminate the envelope. Argument-parser failures use the normal CLI usage error and exit code 2.
 
-Without `--json`, output includes the session ID, name, answer, and output-image locations; warnings go to stderr. A name is derived locally from the first prompt. Use `--name` to choose one when creating a conversation.
+Without `--json`, output includes the session ID, name, answer, and output-image locations; warnings go to stderr. Progress also goes to stderr: each model request, the model's readable reasoning (when the provider returns it) and intermediate text, and every tool call with its input and result. Long values are shown as their first and last lines with the omitted count, and long lines are cut at 200 characters; `--log-level DEBUG` shows everything, including replayed history. `--log-level WARNING` hides progress. JSON mode shows no progress. A name is derived locally from the first prompt. Use `--name` to choose one when creating a conversation.
 
 ## Session listing
 

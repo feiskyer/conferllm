@@ -279,35 +279,6 @@ class ArtifactTransaction:
         self._artifacts.append(artifact)
         return artifact
 
-    def stage_file(
-        self,
-        source: Path,
-        *,
-        direction: ArtifactDirection,
-        mime_type: str,
-        index: int | None = None,
-    ) -> Artifact:
-        """Read a source once and stage its bytes."""
-        try:
-            expanded_source = source.expanduser()
-            if expanded_source.is_symlink():
-                raise OSError("source must not be a symlink")
-            source_path = expanded_source.resolve(strict=True)
-            if not source_path.is_file():
-                raise OSError("source is not a regular file")
-            data = source_path.read_bytes()
-        except OSError as exc:
-            self.rollback()
-            raise ArtifactError(
-                f"Unable to read artifact source '{source}': {exc}"
-            ) from exc
-        return self.stage_bytes(
-            data,
-            direction=direction,
-            mime_type=mime_type,
-            index=index,
-        )
-
     def install(self) -> Path:
         """Atomically move the complete staged turn into canonical storage."""
         if self._finalized:
@@ -371,10 +342,6 @@ class ArtifactTransaction:
             raise ArtifactError("Artifact transaction is already installed.")
         if not self.staging_path.is_dir() or self.staging_path.is_symlink():
             raise ArtifactError("Artifact staging directory is unavailable.")
-
-
-# ArtifactBatch is the shorter public name used by callers that build a turn.
-ArtifactBatch = ArtifactTransaction
 
 
 def resolve_relative_path(asset_root: Path, relative_path: str) -> Path:

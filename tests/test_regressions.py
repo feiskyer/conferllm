@@ -105,7 +105,9 @@ def test_provider_error_is_redacted_and_keeps_provider_code(
         ),
         pytest.raises(RuntimeError) as failure,
     ):
-        client.chat("vision", [{"role": "user", "content": "hello"}])
+        client.chat(
+            "vision", [{"role": "user", "content": "hello"}], system_prompt=None
+        )
     public = normalize_error(failure.value)
     assert public.code == "provider_error"
     assert "synthetic-secret" not in str(public)

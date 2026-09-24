@@ -76,6 +76,9 @@ class LoadedSession:
     schema_version: int = SCHEMA_VERSION
     turns: list[dict[str, Any]] = field(default_factory=list, compare=False)
     artifacts: list[Artifact] = field(default_factory=list, compare=False)
+    # Headers written before prompts were pinned omit the field entirely.
+    pins_system_prompt: bool = False
+    system_prompt: str | None = None
 
     def artifact(self, artifact_id: str) -> Artifact | None:
         """Return referenced artifact metadata by ID."""
@@ -210,14 +213,6 @@ class SessionStore:
                 code="storage_error",
             ) from exc
 
-    def begin_artifact_transaction(
-        self,
-        session_id: str,
-        turn: int,
-    ) -> ArtifactTransaction:
-        """Alias with an action-oriented name for chat-service integrations."""
-        return self.artifact_transaction(session_id, turn)
-
     @contextmanager
     def lock(self, session_id: str) -> Iterator[None]:
         """Hold an exclusive cross-process lock for one session."""
@@ -281,9 +276,16 @@ class SessionStore:
         artifacts: list[Artifact] | tuple[Artifact, ...] | None = None,
         artifact_transaction: ArtifactTransaction | None = None,
         tool_messages: list[dict[str, Any]] | None = None,
+        system_prompt: str | None = None,
     ) -> SessionMetadata:
-        """Atomically create a session containing its first complete turn."""
+        """Atomically create a session containing its first complete turn.
+
+        ``system_prompt`` is the prompt actually sent for turn 1. It is pinned
+        so continuations replay the same prefix after configuration changes.
+        """
         session_file = self.session_path(session_id)
+        if system_prompt is not None and not isinstance(system_prompt, str):
+            raise SessionError("System prompt must be a string or null.")
         normalized_name = derive_session_name("", explicit_name=name)
         normalized_model = self._validate_model(model)
         timestamp = self._normalize_datetime(created_at)
@@ -324,6 +326,7 @@ class SessionStore:
             "type": "session",
             "schema_version": SCHEMA_VERSION,
             **metadata.to_dict(),
+            "system_prompt": system_prompt,
         }
         turn = self._turn_record(
             turn=1,
@@ -429,6 +432,12 @@ class SessionStore:
             header = self._parse_record(first_line, session_id, 1)
             schema_version = self._schema_version_from_record(header, session_id, 1)
             metadata = self._metadata_from_record(header, session_id, 1)
+            pins_system_prompt = "system_prompt" in header
+            system_prompt = header.get("system_prompt")
+            if system_prompt is not None and not isinstance(system_prompt, str):
+                raise self._corruption(
+                    session_id, 1, "system prompt must be a string or null"
+                )
             messages: list[dict[str, Any]] = []
             turns: list[dict[str, Any]] = []
             artifacts: list[Artifact] = []
@@ -479,6 +488,8 @@ class SessionStore:
             schema_version=schema_version,
             turns=turns,
             artifacts=artifacts,
+            pins_system_prompt=pins_system_prompt,
+            system_prompt=system_prompt,
         )
 
     def append_turn(
@@ -1411,10 +1422,20 @@ class SessionStore:
                 continue
             if re.fullmatch(r"\d{4}", year_directory.name) is None:
                 continue
+            year = int(year_directory.name)
+            if (since is not None and year < since.year) or (
+                until is not None and year > until.year
+            ):
+                continue
             for month_directory in year_directory.iterdir():
                 if not self._is_plain_directory(month_directory):
                     continue
                 if re.fullmatch(r"\d{2}", month_directory.name) is None:
+                    continue
+                month = (year, int(month_directory.name))
+                if (since is not None and month < (since.year, since.month)) or (
+                    until is not None and month > (until.year, until.month)
+                ):
                     continue
                 for day_directory in month_directory.iterdir():
                     if not self._is_plain_directory(day_directory):

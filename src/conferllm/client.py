@@ -28,6 +28,16 @@ from .tools import tool_definitions
 
 logger = logging.getLogger(__name__)
 _RESPONSE_TYPES_LOCK = threading.Lock()
+# Appended to every configured prompt so delegated models know how they are run.
+HARNESS_PROMPT = (
+    "You are running inside ConferLLM on behalf of a calling agent or user. "
+    "Only your final message is returned to them, and they cannot answer "
+    "questions while you work. Carry out the requested work without asking permission for steps "
+    "the request already covers. If a destructive action or a change beyond "
+    "the request needs a decision, stop and ask for it in your final message. "
+    "Make that final message stand on its own: what you found, what you "
+    "changed, and anything left undone."
+)
 
 
 def _prepare_response_types() -> None:
@@ -96,7 +106,13 @@ class LLMClient:
         litellm.drop_params = False
         litellm.add_function_to_prompt = False
 
-    def chat(self, model_name: str, messages: list[dict[str, Any]]) -> ModelResponse:
+    def chat(
+        self,
+        model_name: str,
+        messages: list[dict[str, Any]],
+        *,
+        system_prompt: str | None,
+    ) -> ModelResponse:
         """Chat with specified AI model.
 
         Args:
@@ -121,6 +137,8 @@ class LLMClient:
                          {"type": "text", "text": "What's in this image?"},
                          {"type": "image_url", "image_url": {"url": "/Users/john/Desktop/photo.jpg"}}
                        ]}]
+            system_prompt: Prompt to prepend. Sessions pin it at creation so
+                     configuration edits cannot change a replayed prefix.
 
         Returns:
             Raw LiteLLM response from one provider request. Built-in tool schemas
@@ -146,9 +164,9 @@ class LLMClient:
         processed_messages = self._process_messages_for_local_images(messages)
 
         # Apply system prompt if configured
-        prepared_messages = self._prepare_messages_with_system_prompt(
-            processed_messages, model_config
-        )
+        prepared_messages = (
+            [{"role": "system", "content": system_prompt}] if system_prompt else []
+        ) + processed_messages
         model_request(model_name, prepared_messages)
 
         try:
@@ -181,6 +199,16 @@ class LLMClient:
                 litellm_model = "ollama_chat/" + litellm_model.removeprefix("ollama/")
             if litellm_params.get("custom_llm_provider") == "ollama":
                 litellm_params["custom_llm_provider"] = "ollama_chat"
+
+            thinking = litellm_params.get("thinking")
+            if (
+                self._is_anthropic_provider(model_config)
+                and isinstance(thinking, dict)
+                and thinking.get("type") in {"enabled", "adaptive"}
+            ):
+                # Newer Claude models omit thinking text unless asked; keep an
+                # explicit display choice.
+                litellm_params["thinking"] = {"display": "summarized", **thinking}
 
             if self._is_openai_provider(model_config):
                 if model_config.api_format == "responses":
@@ -228,6 +256,14 @@ class LLMClient:
                 "The provider must support native tool calling; tools are always enabled.",
                 details={"exception_type": error_type},
             ) from None
+
+    @staticmethod
+    def _is_anthropic_provider(model_config: ModelConfig) -> bool:
+        params = model_config.litellm_params
+        explicit = params.get("custom_llm_provider")
+        if explicit is not None:
+            return bool(explicit == "anthropic")
+        return str(params["model"]).startswith("anthropic/")
 
     @staticmethod
     def _is_openai_provider(model_config: ModelConfig) -> bool:
@@ -344,35 +380,18 @@ class LLMClient:
 
         return processed_messages
 
-    def _prepare_messages_with_system_prompt(
-        self,
-        messages: list[dict[str, Any]],
-        model_config: ModelConfig | None = None,
-    ) -> list[dict[str, Any]]:
-        """Add system prompt to messages if configured."""
-        result_messages: list[dict[str, Any]] = []
+    def system_prompt_for(self, model_name: str) -> str:
+        """Return the configured prompt followed by the ConferLLM harness prompt.
 
-        # Determine system prompt with precedence: model-specific > global
-        system_prompt: str | None
-        if model_config is not None and hasattr(model_config, "system_prompt"):
-            # Use model-specific value if explicitly set (including empty string
-            # to intentionally disable/override any global prompt). Only fall back
-            # to global when the model-level value is None (unset).
-            if model_config.system_prompt is not None:
-                system_prompt = model_config.system_prompt
-            else:
-                system_prompt = self.config.global_system_prompt
-        else:
-            system_prompt = self.config.global_system_prompt
-
-        # Add system prompt if configured
-        if system_prompt:
-            result_messages.append({"role": "system", "content": system_prompt})
-
-        # Add the original messages
-        result_messages.extend(messages)
-
-        return result_messages
+        A model-level ``""`` disables the global prompt but not the harness one.
+        """
+        model_config = self.require_model_config(model_name)
+        configured = (
+            model_config.system_prompt
+            if model_config.system_prompt is not None
+            else self.config.global_system_prompt
+        )
+        return f"{configured}\n\n{HARNESS_PROMPT}" if configured else HARNESS_PROMPT
 
     def list_models(self) -> list[str]:
         """List all available models."""

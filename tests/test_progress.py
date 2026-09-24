@@ -12,8 +12,9 @@ import pytest
 
 from conferllm.chat import ChatService
 from conferllm.cli import run_cli
+from conferllm.client import HARNESS_PROMPT
 from conferllm.errors import ConferLLMError
-from conferllm.progress import event, model_request
+from conferllm.progress import event, model_request, reasoning_text
 from conferllm.tools import ToolRuntime
 from tests.chat_fixtures import configured_client, response
 from tests.test_tool_chat import call, tool_response
@@ -36,7 +37,11 @@ def test_prompt_and_tool_progress_are_logged_before_work_finishes(
     path = tmp_path / "output.txt"
     arguments = {"path": str(path), "content": "useful output"}
     replies = [
-        tool_response(call("write_file", arguments), content="I will write the file."),
+        tool_response(
+            call("write_file", arguments),
+            content="I will write the file.",
+            reasoning_content="A file is needed.",
+        ),
         response("Done."),
     ]
 
@@ -72,10 +77,12 @@ def test_prompt_and_tool_progress_are_logged_before_work_finishes(
     assert all(entry["session"] == result.session_id for entry in logged)
     assert all(entry["turn"] == 1 and entry["model"] == "vision" for entry in logged)
     assert logged[0]["prompt"] == [
-        {"role": "system", "content": "Use the native tools."},
+        {"role": "system", "content": f"Use the native tools.\n\n{HARNESS_PROMPT}"},
         {"role": "user", "content": "Create a file."},
     ]
     assert logged[1]["text"] == "I will write the file."
+    assert logged[1]["reasoning"] == "A file is needed."
+    assert logged[4 + 1]["reasoning"] == ""
     assert logged[1]["tool_calls"] == 1
     assert logged[2]["name"] == logged[3]["name"] == "write_file"
     assert logged[2]["call_id"] == logged[3]["call_id"] == "call-1"
@@ -295,7 +302,10 @@ def test_info_only_renders_current_prompt_and_intermediate_reply(
         caplog.clear()
         service.chat("New prompt.", session_id=first.session_id)
     rendered = "\n".join(record.getMessage() for record in caplog.records)
-    assert "System: Use tools.\n  User: New prompt." in rendered
+    assert (
+        "  System:\n    Use tools.\n\n    You are running inside ConferLLM" in rendered
+    )
+    assert "User: New prompt." in rendered
     assert "I will inspect the directory." in rendered
     assert "Old prompt." not in rendered
     assert "Old answer." not in rendered
@@ -400,6 +410,84 @@ def test_long_text_is_not_silently_truncated(caplog: pytest.LogCaptureFixture) -
     text = "long output\n" * 3000
     event("tool.result", output={"ok": True, "output": text})
     assert events(caplog)[0]["output"]["output"] == text
+
+
+def test_rendered_tool_output_and_input_are_clipped_at_info(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    output = "".join(f"line {index}\n" for index in range(3000))
+    event("tool.result", name="read_file", output={"ok": True, "output": output})
+    rendered = caplog.records[-1].getMessage().splitlines()
+    assert rendered[1:4] == ["  line 0", "  line 1", "  line 2"]
+    assert "  ... [2984 more lines] ..." in rendered
+    assert rendered[-1] == "  line 2999"
+    assert len(rendered) == 18
+    assert events(caplog)[-1]["output"]["output"] == output
+
+    event(
+        "tool.start",
+        name="write_file",
+        input=json.dumps({"path": "a.txt", "content": "y" * 500}),
+    )
+    assert (
+        caplog.records[-1]
+        .getMessage()
+        .endswith("    content: " + "y" * 200 + "... [+300 chars]")
+    )
+
+
+def test_debug_renders_full_tool_output(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG)
+    output = "".join(f"line {index}\n" for index in range(100))
+    event("tool.result", name="read_file", output={"ok": True, "output": output})
+    assert "more lines" not in caplog.records[-1].getMessage()
+    assert "line 50" in caplog.records[-1].getMessage()
+
+
+def test_reasoning_is_extracted_once_and_rendered(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    thinking = [{"type": "thinking", "thinking": "Block thought", "signature": "s"}]
+    assert (
+        reasoning_text(
+            {"reasoning_content": " Plain thought ", "thinking_blocks": thinking}
+        )
+        == "Plain thought"
+    )
+    assert (
+        reasoning_text({"provider_specific_fields": {"thinking_blocks": thinking}})
+        == "Block thought"
+    )
+    assert (
+        reasoning_text(
+            {
+                "provider_specific_fields": {
+                    "conferllm_responses_output": [
+                        {
+                            "type": "reasoning",
+                            "encrypted_content": "opaque",
+                            "summary": [
+                                {"type": "summary_text", "text": "First"},
+                                {"type": "summary_text", "text": "Second"},
+                            ],
+                        },
+                        {"type": "message", "content": []},
+                    ]
+                }
+            }
+        )
+        == "First\n\nSecond"
+    )
+    assert reasoning_text({"provider_specific_fields": {"thinking_blocks": None}}) == ""
+
+    caplog.set_level(logging.INFO)
+    event("model.response", text="Calling tools.", reasoning="Plan it.", tool_calls=1)
+    assert caplog.records[-1].getMessage() == (
+        "Model reply: 1 tool call(s)\n  Reasoning: Plan it.\n  Calling tools."
+    )
+    event("model.response", text="Final answer.", reasoning="Checked.", tool_calls=0)
+    assert caplog.records[-1].getMessage() == "Model finished\n  Reasoning: Checked."
 
 
 def test_json_text_keeps_its_original_formatting(

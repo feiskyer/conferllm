@@ -148,7 +148,7 @@ def install_skill(
         if not force:
             raise FileExistsError(
                 f"Skill destination already exists: {resolved_destination}. "
-                "Use force=True to replace it."
+                "Use --force (or force=True) to replace it."
             )
 
     parent = resolved_destination.parent

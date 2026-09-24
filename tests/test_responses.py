@@ -112,7 +112,9 @@ def test_default_openai_requests_use_responses(
         patch("conferllm.client.litellm.completion") as legacy,
     ):
         assert (
-            active.chat("test", [{"role": "user", "content": "hello"}])
+            active.chat(
+                "test", [{"role": "user", "content": "hello"}], system_prompt=None
+            )
             .choices[0]
             .message.content
             == "done"
@@ -136,7 +138,7 @@ def test_non_openai_providers_keep_their_existing_path(
     active = client(tmp_path, api_format)
     active.config.model_list[0].litellm_params["model"] = "anthropic/claude-test"
     with patch("conferllm.client.litellm.completion") as completion:
-        active.chat("test", [{"role": "user", "content": "hello"}])
+        active.chat("test", [{"role": "user", "content": "hello"}], system_prompt=None)
     assert completion.call_args.kwargs["model"] == "anthropic/claude-test"
     assert not active.get_model_info("test")["uses_responses_api"]
 
@@ -149,7 +151,7 @@ def test_custom_provider_takes_precedence_over_model_name(tmp_path: Path) -> Non
     with patch(
         "conferllm.client.litellm.responses", return_value=native([message("done")])
     ) as endpoint:
-        active.chat("test", [{"role": "user", "content": "hello"}])
+        active.chat("test", [{"role": "user", "content": "hello"}], system_prompt=None)
     assert endpoint.call_args.kwargs["custom_llm_provider"] == "openai"
 
 
@@ -175,7 +177,10 @@ def test_response_parameter_mapping_preserves_existing_options() -> None:
     result = prepare_params(params, tool_definitions())
     assert result["max_output_tokens"] == 200
     assert "max_tokens" not in result and "max_completion_tokens" not in result
-    assert result["reasoning"] == {"effort": "high"}
+    assert result["reasoning"] == {"summary": "auto", "effort": "high"}
+    explicit = prepare_params({"reasoning": {"effort": "low", "summary": None}}, [])
+    assert explicit["reasoning"] == {"summary": None, "effort": "low"}
+    assert "reasoning" not in prepare_params({}, [])
     assert result["text"]["format"]["name"] == "result"
     assert "response_format" not in result and "reasoning_effort" not in result
     assert result["api_base"] == params["api_base"]

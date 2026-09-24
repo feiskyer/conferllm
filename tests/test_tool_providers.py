@@ -352,6 +352,7 @@ def test_native_provider_wire_round_trip(
     follow_up = requests[1]
     if provider == "openai_responses":
         assert [item["type"] for item in follow_up["input"]] == [
+            "message",  # system prompt
             "message",
             "reasoning",
             "message",
@@ -363,9 +364,9 @@ def test_native_provider_wire_round_trip(
         assert native_call["call_id"] == "call_0"
         assert follow_up["input"][-1]["call_id"] == "call_0"
         assert isinstance(follow_up["input"][-1]["output"], str)
-        assert follow_up["input"][1]["encrypted_content"] == "opaque-reasoning"
-        assert follow_up["input"][2]["phase"] == "commentary"
-        assert follow_up["input"][2]["content"][0]["type"] == "output_text"
+        assert follow_up["input"][2]["encrypted_content"] == "opaque-reasoning"
+        assert follow_up["input"][3]["phase"] == "commentary"
+        assert follow_up["input"][3]["content"][0]["type"] == "output_text"
         assert requests[2]["input"][-2]["content"][0]["type"] == "output_text"
         assert requests[2]["input"][: len(follow_up["input"])] == follow_up["input"]
     elif provider == "anthropic":

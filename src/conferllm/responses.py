@@ -285,6 +285,10 @@ def prepare_params(
         result.setdefault(
             "reasoning", effort if isinstance(effort, dict) else {"effort": effort}
         )
+    if isinstance(result.get("reasoning"), dict):
+        # Configured reasoning should be readable in progress output; an
+        # explicit summary setting, including null, is kept as configured.
+        result["reasoning"] = {"summary": "auto", **result["reasoning"]}
     response_format = result.pop("response_format", None)
     if isinstance(response_format, dict):
         native_format = dict(response_format)

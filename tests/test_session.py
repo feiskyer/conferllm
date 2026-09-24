@@ -7,6 +7,7 @@ import multiprocessing
 import os
 import queue
 import stat
+import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -188,6 +189,7 @@ def test_create_load_and_append_round_trip(tmp_path: Path) -> None:
         metadata=metadata,
         messages=[USER_MESSAGE, ASSISTANT_MESSAGE],
         next_turn=2,
+        pins_system_prompt=True,
     )
 
     second_user = {"role": "user", "content": "Continue"}
@@ -727,6 +729,56 @@ def test_list_sessions_filters_orders_and_limits(tmp_path: Path) -> None:
 
     with pytest.raises(SessionError, match="non-negative"):
         store.list_sessions(limit=-1)
+
+
+def test_session_header_rejects_a_non_string_system_prompt(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    _create(store)
+    session_file = store.session_path(SESSION_ID)
+    header, *rest = session_file.read_text(encoding="utf-8").splitlines()
+    record = json.loads(header)
+    record["system_prompt"] = ["not", "text"]
+    session_file.write_text(
+        "\n".join([json.dumps(record), *rest]) + "\n", encoding="utf-8"
+    )
+
+    with pytest.raises(SessionError, match="system prompt") as raised:
+        store.load_session(SESSION_ID)
+    assert raised.value.code == "session_corrupt"
+    with pytest.raises(SessionError, match="System prompt"):
+        store.create_session(
+            f"20260904-{uuid.uuid4().hex}",
+            "name",
+            "reasoning",
+            USER_MESSAGE,
+            ASSISTANT_MESSAGE,
+            created_at=CREATED_AT,
+            system_prompt=42,  # type: ignore[arg-type]
+        )
+
+
+def test_list_sessions_date_range_spans_years_and_months(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    days = [date(2024, 6, 1), date(2025, 12, 31), date(2026, 1, 1), date(2026, 2, 15)]
+    ids = []
+    for day in days:
+        session_id = f"{day:%Y%m%d}-{uuid.uuid4().hex}"
+        ids.append(session_id)
+        _create(
+            store,
+            session_id,
+            created_at=datetime(day.year, day.month, day.day, 12, tzinfo=timezone.utc),
+        )
+
+    def listed(since: date | None, until: date | None) -> list[str]:
+        return [
+            item.session_id for item in store.list_sessions(since=since, until=until)
+        ]
+
+    assert listed(date(2025, 12, 31), date(2026, 1, 1)) == [ids[2], ids[1]]
+    assert listed(date(2025, 1, 1), None) == [ids[3], ids[2], ids[1]]
+    assert listed(None, date(2026, 1, 31)) == [ids[2], ids[1], ids[0]]
+    assert listed(date(2026, 1, 2), date(2026, 2, 14)) == []
 
 
 def test_list_sessions_reads_only_headers(tmp_path: Path) -> None:

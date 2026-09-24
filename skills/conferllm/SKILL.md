@@ -1,172 +1,48 @@
 ---
 name: conferllm
-description: Query locally configured AI models through ConferLLM. Use for another model's answer, specialized reasoning, multimodal visual analysis, persistent follow-up, or attributed cross-model comparisons.
+description: Consult the user's locally configured AI models through the ConferLLM CLI. Use when the user asks for another model's answer or review, a cross-model comparison, delegation to a specific model, or a follow-up in an existing ConferLLM session.
 ---
 
 # ConferLLM Agent Skill
 
-Use the `conferllm` CLI to consult the user's configured models (e.g., GPT-6 Astra, Claude Opus/Sonnet, DeepSeek, Gemini 3.8 Flash, local Qwen). The CLI executes locally, dispatching requests to configured provider endpoints with persistent session state and native host tools.
+The `conferllm` CLI sends a prompt to one of the user's configured model aliases, stores the conversation as a session, and returns JSON. Every delegated model can call 10 native host tools (`run_shell`, `run_powershell`, `shell_output`, `shell_kill`, `git_command`, `read_file`, `write_file`, `append_file`, `edit_file`, `list_directory`). They run with the OS user's permissions, without approval prompts or a sandbox, so the delegated prompt is the only thing that sets the model's scope.
 
-Every chat enables native shell, PowerShell, and file tools without approval prompts or a sandbox. The model can read or modify host files and execute commands with the OS user's access. Keep the delegated task within the user's authorized scope; for an opinion/review, explicitly request no file changes or command execution. This instruction guides the model but is not an enforced restriction. Native tool calling must be supported by the provider; there is no text fallback.
+Use `conferllm doctor --json` and `conferllm models --json` to learn about the setup. Credentials live in `~/.conferllm/config.yaml` and session contents live in `~/.conferllm/sessions/`; do not read, print, or copy either. Attribute each answer to the model alias that produced it.
 
-The `openai` provider uses Responses by default. Model-level `api_format: chat_completion` selects an older OpenAI-compatible endpoint explicitly; other providers are unchanged. Inspect `api_format` and `uses_responses_api` via `model-info` rather than reading configuration contents. GPT-6 Astra tool calling requires Responses.
-
-## Critical Safety & Operational Rules
-
-1. **Native host tools are active on every chat:** Every delegated model receives 10 native tools (`run_shell`, `run_powershell`, `shell_output`, `shell_kill`, `git_command`, `read_file`, `write_file`, `append_file`, `edit_file`, `list_directory`). Tools run on the host with the OS user's permissions without an approval prompt or sandbox.
-2. **Read-only vs. modifying intent:** If the user wants a review, second opinion, or analysis only, explicitly instruct the model in your prompt: *"Provide an analysis/opinion only; do not edit files or run modifying commands."*
-3. **Never inspect or leak secrets:** Never read, echo, migrate, or dump `~/.conferllm/config.yaml` or credentials. Use `conferllm doctor --json` and `conferllm models --json` for safe inspection. Never inspect raw JSONL session files.
-4. **Attribute responses:** Always attribute answers to the specific model alias queried when reporting findings back to the user.
-
----
-
-## 1. Verify Availability (Preflight)
-
-Check whether ConferLLM is installed:
+## Commands
 
 ```bash
-command -v conferllm
+conferllm models --json                     # configured aliases; use only these
+conferllm model-info MODEL                  # modalities, image limits, API format
+conferllm chat --model MODEL --prompt-file ./task.md --json
+conferllm chat --session SESSION_ID --prompt "Follow-up" --json
+conferllm sessions list --query TEXT --json # also --model, --since/--until YYYY-MM-DD, --limit
 ```
 
-If missing, consult [installation reference](references/installation.md). If installed, verify readiness safely:
+- Use `--prompt TEXT` for short prompts and `--prompt-file` for long or multiline ones.
+- Attach images with repeated `--image PATH`; generated images go to `--image-output-dir` (default `/tmp`).
+- A continued session keeps its original model, so pass `--session` without `--model`. Stored history, including past tool calls, is replayed automatically; do not paste earlier turns into the prompt.
+- To compare models, run the same prompt file in one new session per alias.
 
-```bash
-conferllm doctor --json
-```
+In the JSON result (`conferllm.chat.response.v1`), read the answer from `message.text`, keep `session.id` for follow-ups, and read generated image paths from `artifacts[].saved_path` where `direction` is `"output"`. Check `warnings` even when the call succeeds.
 
-Doctor returns non-secret diagnostics (`ok`, `model_aliases`, `permissions`, `next_steps`). If `ok` is false, review suggested next steps.
+## Writing the delegated prompt
 
----
+The delegated model sees only your prompt and its session history, and you see only its final message. It cannot ask you questions mid-turn. Write the prompt the way you would brief a capable colleague who has no other context:
 
-## 2. Model Discovery
+- **Goal and context:** what you need and why, plus the paths, constraints, and findings it would otherwise have to rediscover.
+- **Scope and permissions:** say what it may change. For a review or opinion, write something like "Read whatever you need, but do not edit files or run commands that change state." For an implementation, say what it may modify and what it may run without asking, for example "The tests use temporary fixtures; run them, fix failures caused by this change, and rerun them."
+- **Done criteria:** what finished looks like, such as tests passing or a specific question answered, and where exploration should stop.
+- **Response shape:** what the final message should contain, for example findings with file:line references, a diff summary, or a verdict with reasons.
 
-List configured model aliases:
+Treat the model's final message as a claim to verify, especially when it reports file changes or passing tests.
 
-```bash
-conferllm models --json
-```
+## When something goes wrong
 
-Inspect specific capabilities (modalities, limits, provider format):
+- Exit code 0 means success; 1 means a handled failure, with a `conferllm.error.v1` envelope on stderr (`error.code`, `error.message`); 2 means a CLI usage error. See [errors reference](references/errors.md) for codes, provider/API-format failures, and when retrying is unsafe. A failure after tool calls may have left side effects, so do not blindly retry it.
+- If `conferllm` is missing or doctor reports `ok: false`, follow [installation reference](references/installation.md).
+- For image inputs, limits, and generated images, see [multimodal reference](references/multimodal.md).
 
-```bash
-conferllm model-info MODEL
-```
+## MCP
 
-*Rule:* Use only configured aliases returned by `conferllm models`. Never invent or silently substitute an alias.
-
----
-
-## 3. Starting a New Conversation
-
-Run a new chat and parse machine-readable JSON:
-
-```bash
-conferllm chat --model MODEL --prompt "YOUR PROMPT HERE" --json
-```
-
-For long or multiline prompts, write to a UTF-8 file first and use `--prompt-file`:
-
-```bash
-conferllm chat --model MODEL --prompt-file ./prompt.md --json
-```
-
-Attach local images by repeating `--image`:
-
-```bash
-conferllm chat --model MODEL --prompt "Explain this diagram" --image ./diag.png --json
-```
-
-Save generated images to a specific directory using `--image-output-dir ./output`.
-
-### Parsing the JSON Response (`conferllm.chat.response.v1`)
-
-```json
-{
-  "schema_version": "conferllm.chat.response.v1",
-  "ok": true,
-  "session": {
-    "id": "20260905-0123456789abcdef0123456789abcdef",
-    "name": "Prompt title",
-    "model": "gpt-6-astra",
-    "turn": 1
-  },
-  "message": {
-    "text": "Answer text here...",
-    "content": [{"type": "text", "text": "Answer text here..."}]
-  },
-  "artifacts": [
-    {
-      "id": "artifact-id",
-      "direction": "output",
-      "mime_type": "image/png",
-      "saved_path": "/tmp/output.png",
-      "uri": "conferllm://sessions/.../artifacts/..."
-    }
-  ],
-  "warnings": []
-}
-```
-
-- **Answer text:** `response["message"]["text"]`
-- **Session ID:** `response["session"]["id"]` (save this for follow-up turns!)
-- **Output images:** `[a["saved_path"] for a in response["artifacts"] if a.get("direction") == "output"]`
-
----
-
-## 4. Continuing a Conversation
-
-Continue a stored session by passing `--session` with the saved session ID:
-
-```bash
-conferllm chat --session SESSION_ID --prompt "FOLLOW-UP PROMPT" --json
-```
-
-*Rules for continuation:*
-- Exactly one of `--model` and `--session` is required.
-- Do NOT provide `--model` when continuing; the session permanently retains its original model alias.
-- Prior conversation history and tool executions are automatically restored without re-running past tools.
-- Never attempt to manually concatenate prior history into the prompt.
-
----
-
-## 5. Finding Past Sessions
-
-Find prior conversations through metadata queries:
-
-```bash
-conferllm sessions list --query QUERY --json
-conferllm sessions list --model MODEL --limit 20 --json
-```
-
-`--query` matches session IDs and names (case-insensitive). Filter optionally with `--since YYYY-MM-DD` and `--until YYYY-MM-DD`.
-
----
-
-## 6. Comparing Models
-
-To compare models on the same task, run independent sessions with each model alias and compare the attributed results:
-
-```bash
-conferllm chat --model MODEL_A --prompt-file ./task.md --json
-conferllm chat --model MODEL_B --prompt-file ./task.md --json
-```
-
-Report both answers clearly attributed to their respective models. Read [multimodal reference](references/multimodal.md) for image comparisons.
-
----
-
-## 7. Error Handling & Diagnostics
-
-- **Exit code 0:** Success. Check `warnings` array for non-fatal issues (e.g. background process stopped).
-- **Exit code 1:** Handled failure. Stderr contains a `conferllm.error.v1` envelope with `error.code` and `error.message`.
-- **Exit code 2:** CLI usage or argument error.
-
-Consult [errors reference](references/errors.md) for full error codes and recovery boundaries.
-
-## 8. MCP Alternative
-
-When using ConferLLM via MCP (`conferllm serve`), call:
-- `create_chat(message, model, ...)` to start a chat.
-- `continue_chat(message, session_id, ...)` to continue.
-- `list_sessions(...)` to search sessions.
-- `list_models()` and `get_model_info(model)` for discovery.
+With `conferllm serve`, the same operations are available as MCP tools: `create_chat(message, model, ...)`, `continue_chat(message, session_id, ...)`, `list_sessions(...)`, `list_models()`, and `get_model_info(model)`.

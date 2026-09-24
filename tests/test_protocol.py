@@ -82,7 +82,7 @@ async def test_mcp_client_server_round_trip(tmp_path: Path) -> None:
                 assert "[invalid_request]" in invalid.content[0].text
             tasks.cancel_scope.cancel()
     assert provider.call_count == 2
-    history = provider.call_args_list[1].kwargs["messages"]
+    history = provider.call_args_list[1].kwargs["messages"][1:]  # after system
     assert history[0]["content"][1]["image_url"]["url"] == DATA_URL
     assert history[1]["content"][1]["image_url"]["url"] == DATA_URL
 
@@ -115,7 +115,7 @@ def test_schema_one_continuation_keeps_images_replayable(tmp_path: Path) -> None
     assert all("artifacts" not in turn for turn in loaded.turns)
     assert store.read_artifact(first.session_id, "t0002-output-001") == PNG
     assert second.content[0]["artifact_id"] == "t0002-output-001"
-    replay = provider.call_args_list[1].kwargs["messages"]
+    replay = provider.call_args_list[1].kwargs["messages"][1:]  # after system
     assert replay[2]["content"][1]["image_url"]["url"] == DATA_URL
     assert replay[3]["content"][0]["image_url"]["url"] == DATA_URL
 

@@ -13,6 +13,7 @@ from textwrap import indent
 from typing import Any, TextIO
 
 from .errors import normalize_error
+from .responses import STATE_KEY
 
 logger = logging.getLogger(__name__)
 _SECRET_KEY = re.compile(
@@ -29,6 +30,10 @@ _DATA_URL = re.compile(r"data:[^\s;,]+;base64,[A-Za-z0-9+/=\r\n]+")
 _IMAGE_KEYS = {"image_url", "b64_json", "base64", "image_base64"}
 _MESSAGE_KEYS = {"role", "content", "tool_calls", "tool_call_id", "name"}
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+# Rendered text is clipped for people; structured records keep full values.
+_DISPLAY_HEAD_LINES = 10
+_DISPLAY_TAIL_LINES = 6
+_DISPLAY_LINE_CHARS = 200
 
 
 @contextmanager
@@ -137,6 +142,55 @@ def _sanitize(value: Any, depth: int = 0) -> Any:
     return value
 
 
+def _clip(text: str) -> str:
+    """Keep the start and end of long text readable; DEBUG shows everything."""
+    if logger.isEnabledFor(logging.DEBUG):
+        return text
+    lines = [
+        line
+        if len(line) <= _DISPLAY_LINE_CHARS
+        else f"{line[:_DISPLAY_LINE_CHARS]}... [+{len(line) - _DISPLAY_LINE_CHARS} chars]"
+        for line in text.splitlines()
+    ]
+    hidden = len(lines) - _DISPLAY_HEAD_LINES - _DISPLAY_TAIL_LINES
+    if hidden > 0:
+        lines = [
+            *lines[:_DISPLAY_HEAD_LINES],
+            f"... [{hidden} more lines] ...",
+            *lines[-_DISPLAY_TAIL_LINES:],
+        ]
+    return "\n".join(lines)
+
+
+def reasoning_text(message: dict[str, Any]) -> str:
+    """Return readable provider reasoning; opaque or encrypted state is skipped.
+
+    LiteLLM may expose the same thinking as ``reasoning_content`` and as
+    ``thinking_blocks``, so the first non-empty source wins.
+    """
+    fields = message.get("provider_specific_fields") or {}
+    blocks = message.get("thinking_blocks") or fields.get("thinking_blocks") or []
+    summaries = [
+        part.get("text")
+        for item in fields.get(STATE_KEY) or []
+        if isinstance(item, dict) and item.get("type") == "reasoning"
+        for part in item.get("summary") or []
+        if isinstance(part, dict)
+    ]
+    sources = [
+        [message.get("reasoning_content")],
+        [block.get("thinking") for block in blocks if isinstance(block, dict)],
+        summaries,
+    ]
+    for source in sources:
+        text = "\n\n".join(
+            part.strip() for part in source if isinstance(part, str) and part.strip()
+        )
+        if text:
+            return text
+    return ""
+
+
 def _decode_arguments(value: str) -> Any:
     try:
         return json.loads(value)
@@ -157,7 +211,7 @@ def _value_text(value: Any) -> str:
         return "(none)"
     if isinstance(value, bool):
         return "true" if value else "false"
-    return str(value)
+    return _clip(str(value))
 
 
 def _field(label: str, value: Any) -> str:
@@ -177,7 +231,7 @@ def _tool_output(output: dict[str, Any]) -> str:
             location = ".".join(str(part) for part in detail.get("loc", []))
             lines.append(_field(location or "Arguments", detail["msg"]))
     if output.get("output"):
-        lines.append(str(output["output"]))
+        lines.append(_clip(str(output["output"])))
     elif output.get("path"):
         lines.append(_field("Path", output["path"]))
     if output.get("exit_code") not in (None, 0):
@@ -234,8 +288,13 @@ def _format_event(data: dict[str, Any]) -> str:
         title += elapsed
         if data.get("output_images"):
             title += f"; {data['output_images']} image(s)"
-        if count or logger.isEnabledFor(logging.DEBUG):
-            detail = data.get("text", "")
+        # The final answer is printed on stdout; only intermediate text repeats.
+        pieces = []
+        if data.get("reasoning"):
+            pieces.append(_field("Reasoning", data["reasoning"]))
+        if data.get("text") and (count or logger.isEnabledFor(logging.DEBUG)):
+            pieces.append(_clip(data["text"]))
+        detail = "\n".join(pieces)
     elif name == "tool.start":
         title = f"Tool {data.get('name', '')}"
         detail = _field("Input", data["input"])

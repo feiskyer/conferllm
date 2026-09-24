@@ -4,7 +4,12 @@ from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
-from conferllm.client import ImageLimitError, LLMClient, ModelCapabilityError
+from conferllm.client import (
+    HARNESS_PROMPT,
+    ImageLimitError,
+    LLMClient,
+    ModelCapabilityError,
+)
 from conferllm.config import (
     ConferLLMConfig,
     ImageLimits,
@@ -56,7 +61,7 @@ class TestLLMClient:
             return_value=mock_response,
         ) as mock_completion:
             messages = [{"role": "user", "content": "Hello, world!"}]
-            response = self.client.chat("gpt-4", messages)
+            response = self.client.chat("gpt-4", messages, system_prompt=None)
 
             assert response == mock_response
             mock_completion.assert_called_once_with(
@@ -95,13 +100,18 @@ class TestLLMClient:
             return_value=mock_response,
         ) as mock_completion:
             messages = [{"role": "user", "content": "Hello, world!"}]
-            response = client.chat("gpt-4", messages)
+            response = client.chat(
+                "gpt-4", messages, system_prompt=client.system_prompt_for("gpt-4")
+            )
 
             assert response == mock_response
             mock_completion.assert_called_once_with(
                 model="openai/gpt-4",
                 messages=[
-                    {"role": "system", "content": "Global system prompt"},
+                    {
+                        "role": "system",
+                        "content": f"Global system prompt\n\n{HARNESS_PROMPT}",
+                    },
                     {"role": "user", "content": "Hello, world!"},
                 ],
                 api_key="test-key",
@@ -136,13 +146,18 @@ class TestLLMClient:
             return_value=mock_response,
         ) as mock_completion:
             messages = [{"role": "user", "content": "Hello, world!"}]
-            response = client.chat("gpt-4", messages)
+            response = client.chat(
+                "gpt-4", messages, system_prompt=client.system_prompt_for("gpt-4")
+            )
 
             assert response == mock_response
             mock_completion.assert_called_once_with(
                 model="openai/gpt-4",
                 messages=[
-                    {"role": "system", "content": "Model-specific system prompt"},
+                    {
+                        "role": "system",
+                        "content": f"Model-specific system prompt\n\n{HARNESS_PROMPT}",
+                    },
                     {"role": "user", "content": "Hello, world!"},
                 ],
                 api_key="test-key",
@@ -168,7 +183,7 @@ class TestLLMClient:
             "conferllm.client.litellm.completion",
             return_value=mock_response,
         ) as mock_completion:
-            response = self.client.chat("gpt-4", messages)
+            response = self.client.chat("gpt-4", messages, system_prompt=None)
 
             assert response == mock_response
             mock_completion.assert_called_once_with(
@@ -190,7 +205,11 @@ class TestLLMClient:
         with pytest.raises(
             ValueError, match="Model 'non-existing' not found in configuration"
         ):
-            self.client.chat("non-existing", [{"role": "user", "content": "Hello!"}])
+            self.client.chat(
+                "non-existing",
+                [{"role": "user", "content": "Hello!"}],
+                system_prompt=None,
+            )
 
     def test_chat_missing_model_parameter(self):
         """Reject a missing provider model while validating configuration."""
@@ -209,7 +228,9 @@ class TestLLMClient:
             ),
             pytest.raises(RuntimeError, match="Failed to get response from gpt-4"),
         ):
-            self.client.chat("gpt-4", [{"role": "user", "content": "Hello!"}])
+            self.client.chat(
+                "gpt-4", [{"role": "user", "content": "Hello!"}], system_prompt=None
+            )
 
     def test_chat_empty_response(self):
         """Test chat with empty response."""
@@ -221,7 +242,7 @@ class TestLLMClient:
             return_value=mock_response,
         ):
             response = self.client.chat(
-                "gpt-4", [{"role": "user", "content": "Hello!"}]
+                "gpt-4", [{"role": "user", "content": "Hello!"}], system_prompt=None
             )
             assert response == mock_response
 
@@ -237,12 +258,12 @@ class TestLLMClient:
             return_value=mock_response,
         ):
             response = self.client.chat(
-                "gpt-4", [{"role": "user", "content": "Hello!"}]
+                "gpt-4", [{"role": "user", "content": "Hello!"}], system_prompt=None
             )
             assert response == mock_response
 
-    def test_prepare_messages_with_system_prompt(self):
-        """Test preparing messages with system prompt."""
+    def test_system_prompt_for_uses_global_prompt(self):
+        """Resolve the global prompt when a model has none."""
         config = ConferLLMConfig(
             global_system_prompt="Global system prompt",
             model_list=[
@@ -253,16 +274,11 @@ class TestLLMClient:
             ],
         )
         client = LLMClient(config)
-        model_config = config.get_model_config("gpt-4")
-        messages = [{"role": "user", "content": "Hello, world!"}]
+        assert client.system_prompt_for("gpt-4") == (
+            f"Global system prompt\n\n{HARNESS_PROMPT}"
+        )
 
-        prepared = client._prepare_messages_with_system_prompt(messages, model_config)
-        assert prepared == [
-            {"role": "system", "content": "Global system prompt"},
-            {"role": "user", "content": "Hello, world!"},
-        ]
-
-    def test_prepare_messages_model_specific_overrides_global(self):
+    def test_system_prompt_for_prefers_model_prompt(self):
         """Test that model-specific system prompt overrides global system prompt."""
         config = ConferLLMConfig(
             global_system_prompt="Global system prompt",
@@ -282,30 +298,19 @@ class TestLLMClient:
             ],
         )
         client = LLMClient(config)
-        messages = [{"role": "user", "content": "Hello, world!"}]
-
-        # Test model with specific system prompt
-        gpt4_config = config.get_model_config("gpt-4")
-        prepared = client._prepare_messages_with_system_prompt(messages, gpt4_config)
-        assert prepared == [
-            {"role": "system", "content": "Model-specific system prompt"},
-            {"role": "user", "content": "Hello, world!"},
-        ]
-
-        # Test model without specific system prompt (should use global)
-        claude_config = config.get_model_config("claude-sonnet")
-        prepared = client._prepare_messages_with_system_prompt(messages, claude_config)
-        assert prepared == [
-            {"role": "system", "content": "Global system prompt"},
-            {"role": "user", "content": "Hello, world!"},
-        ]
+        assert client.system_prompt_for("gpt-4") == (
+            f"Model-specific system prompt\n\n{HARNESS_PROMPT}"
+        )
+        assert client.system_prompt_for("claude-sonnet") == (
+            f"Global system prompt\n\n{HARNESS_PROMPT}"
+        )
 
     def test_messages_validation_invalid_format(self):
         """Test messages validation with invalid format."""
         with pytest.raises(
             ValueError, match="Messages must be a list of message dictionaries"
         ):
-            self.client.chat("gpt-4", "string_instead_of_list")  # type: ignore
+            self.client.chat("gpt-4", "string_instead_of_list", system_prompt=None)  # type: ignore
 
     def test_messages_validation_missing_keys(self):
         """Test messages validation with missing keys."""
@@ -318,7 +323,7 @@ class TestLLMClient:
             ValueError,
             match="Each message must be a dictionary with 'role' and 'content' keys",
         ):
-            self.client.chat("gpt-4", invalid_messages)
+            self.client.chat("gpt-4", invalid_messages, system_prompt=None)
 
     def test_list_models(self):
         """Test listing available models."""
@@ -449,10 +454,4 @@ class TestLLMClient:
             ],
         )
         client = LLMClient(config)
-        model_cfg = config.get_model_config("gpt-4")
-        assert model_cfg is not None
-
-        # _prepare_messages_with_system_prompt should NOT include a system message
-        messages = [{"role": "user", "content": "Hello!"}]
-        prepared = client._prepare_messages_with_system_prompt(messages, model_cfg)
-        assert prepared == [{"role": "user", "content": "Hello!"}]
+        assert client.system_prompt_for("gpt-4") == HARNESS_PROMPT

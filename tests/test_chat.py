@@ -1,6 +1,7 @@
 """Tests for the shared stateful chat service."""
 
 import base64
+import json
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -36,6 +37,7 @@ def make_client() -> MagicMock:
         ),
         [],
     )
+    client.system_prompt_for.return_value = None
     return client
 
 
@@ -131,6 +133,52 @@ def test_continue_session_replays_history(tmp_path: Path) -> None:
             {"role": "user", "content": "Follow-up"},
         ],
     )
+
+
+def test_continuation_replays_the_system_prompt_pinned_at_creation(
+    tmp_path: Path,
+) -> None:
+    """Configuration edits must not change the prefix of an existing session."""
+    client = make_client()
+    client.chat.side_effect = [make_response(text) for text in ("A", "B", "C")]
+    store = SessionStore(tmp_path / "sessions")
+    service = ChatService(client, store)
+    client.system_prompt_for.return_value = "Original prompt"
+    first = service.chat("First question", model="reasoning")
+
+    client.system_prompt_for.return_value = "Edited prompt"
+    service.chat("Follow-up", session_id=first.session_id)
+    fresh = service.chat("New question", model="reasoning")
+
+    prompts = [call.kwargs["system_prompt"] for call in client.chat.call_args_list]
+    assert prompts == ["Original prompt", "Original prompt", "Edited prompt"]
+    assert store.load_session(first.session_id).system_prompt == "Original prompt"
+    assert store.load_session(fresh.session_id).system_prompt == "Edited prompt"
+
+
+def test_sessions_without_a_pinned_prompt_use_the_current_configuration(
+    tmp_path: Path,
+) -> None:
+    """Headers written before pinning keep resolving the prompt from config."""
+    client = make_client()
+    client.chat.side_effect = [make_response("First"), make_response("Second")]
+    store = SessionStore(tmp_path / "sessions")
+    service = ChatService(client, store)
+    first = service.chat("First question", model="reasoning")
+    session_file = store.session_path(first.session_id)
+    header, *rest = session_file.read_text(encoding="utf-8").splitlines()
+    legacy = json.loads(header)
+    del legacy["system_prompt"]
+    session_file.write_text(
+        "\n".join([json.dumps(legacy), *rest]) + "\n", encoding="utf-8"
+    )
+    assert not store.load_session(first.session_id).pins_system_prompt
+
+    client.system_prompt_for.return_value = "Current prompt"
+    service.chat("Follow-up", session_id=first.session_id)
+
+    assert client.chat.call_args_list[1].kwargs["system_prompt"] == "Current prompt"
+    client.system_prompt_for.assert_called_with("reasoning")
 
 
 def test_app_directory_move_preserves_session_and_image_replay(

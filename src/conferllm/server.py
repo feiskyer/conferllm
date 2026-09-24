@@ -19,27 +19,17 @@ from .chat import ChatResult, ChatService
 from .client import LLMClient
 from .config import ConferLLMConfig
 from .errors import ConferLLMError, normalize_error
-from .images import (
-    extract_and_save_base64_images,
-    prepare_image_output_dir,
-    process_response_for_images,
-)
 from .session import SessionStore
 from .tools.common import cancellation_scope
 
 logger = logging.getLogger(__name__)
 
 Transport = Literal["stdio", "sse", "http"]
-INLINE_IMAGE_LIMIT_BYTES = 1024 * 1024
 
 __all__ = [
     "Transport",
-    "INLINE_IMAGE_LIMIT_BYTES",
     "create_mcp_server",
-    "extract_and_save_base64_images",
     "initialize_client",
-    "prepare_image_output_dir",
-    "process_response_for_images",
     "run_server",
 ]
 
@@ -98,10 +88,7 @@ def _validate_mcp_images(images: list[str] | None) -> None:
             )
 
 
-def _chat_tool_result(
-    result: ChatResult,
-    _store: SessionStore,
-) -> CallToolResult:
+def _chat_tool_result(result: ChatResult) -> CallToolResult:
     structured = _without_server_paths(result.to_dict(include_local_paths=False))
     content: list[Any] = []
 
@@ -210,7 +197,7 @@ def create_mcp_server(
                     image_output_dir=output_dir,
                     include_raw_response=include_raw_response,
                 )
-            return await asyncio.to_thread(_chat_tool_result, result, require_store())
+            return _chat_tool_result(result)
         except asyncio.CancelledError:
             cancelled.set()
             raise

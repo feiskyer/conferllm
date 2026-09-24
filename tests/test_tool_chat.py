@@ -127,7 +127,7 @@ def test_provider_parameters_cannot_disable_or_replace_builtin_tools() -> None:
     with patch(
         "conferllm.client.litellm.completion", return_value=response()
     ) as provider:
-        client.chat("test", [{"role": "user", "content": "hello"}])
+        client.chat("test", [{"role": "user", "content": "hello"}], system_prompt=None)
     sent = provider.call_args.kwargs
     assert sent["tools"] == tool_definitions()
     assert sent["tool_choice"] == "auto"
@@ -151,8 +151,56 @@ def test_custom_ollama_provider_uses_native_chat_route() -> None:
     with patch(
         "conferllm.client.litellm.completion", return_value=response()
     ) as provider:
-        client.chat("test", [{"role": "user", "content": "hello"}])
+        client.chat("test", [{"role": "user", "content": "hello"}], system_prompt=None)
     assert provider.call_args.kwargs["custom_llm_provider"] == "ollama_chat"
+
+
+@pytest.mark.parametrize(
+    ("params", "expected"),
+    [
+        (
+            {"model": "anthropic/claude", "thinking": {"type": "adaptive"}},
+            {"display": "summarized", "type": "adaptive"},
+        ),
+        (
+            {
+                "model": "claude",
+                "custom_llm_provider": "anthropic",
+                "thinking": {"type": "enabled", "budget_tokens": 2048},
+            },
+            {"display": "summarized", "type": "enabled", "budget_tokens": 2048},
+        ),
+        (
+            {
+                "model": "anthropic/claude",
+                "thinking": {"type": "adaptive", "display": "omitted"},
+            },
+            {"type": "adaptive", "display": "omitted"},
+        ),
+        (
+            {"model": "anthropic/claude", "thinking": {"type": "disabled"}},
+            {"type": "disabled"},
+        ),
+        (
+            {"model": "gemini/model", "thinking": {"type": "enabled"}},
+            {"type": "enabled"},
+        ),
+    ],
+)
+def test_enabled_claude_thinking_is_summarized_unless_configured(
+    params: dict, expected: dict
+) -> None:
+    client = LLMClient(
+        ConferLLMConfig(
+            model_list=[ModelConfig(model_name="test", litellm_params=params)]
+        )
+    )
+    with patch(
+        "conferllm.client.litellm.completion", return_value=response()
+    ) as provider:
+        client.chat("test", [{"role": "user", "content": "hello"}], system_prompt=None)
+    assert provider.call_args.kwargs["thinking"] == expected
+    assert client.config.model_list[0].litellm_params["thinking"] == params["thinking"]
 
 
 def test_multiple_rounds_sequential_calls_history_replay_and_usage(
@@ -214,9 +262,10 @@ def test_multiple_rounds_sequential_calls_history_replay_and_usage(
     assert follow_up.turn == 2
     assert path.read_text() == "external edit"
     replay = provider.call_args_list[3].kwargs["messages"]
-    assert replay[:-1] == loaded.messages
-    assert len(provider.call_args_list[0].kwargs["messages"]) == 1
-    assert len(provider.call_args_list[1].kwargs["messages"]) == 3
+    assert replay[0]["role"] == "system"
+    assert replay[1:-1] == loaded.messages
+    assert len(provider.call_args_list[0].kwargs["messages"]) == 2
+    assert len(provider.call_args_list[1].kwargs["messages"]) == 4
 
 
 def test_tool_failures_allow_model_to_correct_arguments(tmp_path: Path) -> None:
@@ -238,7 +287,7 @@ def test_tool_failures_allow_model_to_correct_arguments(tmp_path: Path) -> None:
     ) as provider:
         result = ChatService(client).chat("Create the file", model="vision")
     assert result.text == "Recovered" and path.read_text() == "fixed"
-    errors = provider.call_args_list[1].kwargs["messages"][2:]
+    errors = provider.call_args_list[1].kwargs["messages"][3:]
     assert len(errors) == 3
     assert all(not json.loads(message["content"])["ok"] for message in errors)
     assert [message["tool_call_id"] for message in errors] == [

@@ -1,7 +1,6 @@
 """Integration tests for the ConferLLM MCP server."""
 
 import asyncio
-import base64
 import json
 import threading
 from dataclasses import dataclass, field
@@ -17,7 +16,6 @@ from conferllm.config import ConferLLMConfig, ModelConfig
 from conferllm.server import (
     create_mcp_server,
     initialize_client,
-    process_response_for_images,
     run_server,
 )
 
@@ -571,79 +569,6 @@ class TestMCPIntegration:
         ):
             run_server(transport="websocket")  # type: ignore[arg-type]
         mock_initialize.assert_not_called()
-
-
-class TestImageResponseProcessing:
-    """Test image extraction from model responses."""
-
-    def test_process_multimodal_list_without_mutating_input(self) -> None:
-        """Save image blocks while preserving the original response."""
-        image_bytes = b"\x89PNG\r\n\x1a\nfake image data"
-        data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode(
-            "ascii"
-        )
-        response = {
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": [
-                            {"type": "text", "text": "Here is the result."},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": data_url},
-                            },
-                        ],
-                    }
-                }
-            ]
-        }
-
-        processed = process_response_for_images(response)
-
-        assert (
-            response["choices"][0]["message"]["content"][1]["image_url"]["url"]
-            == data_url
-        )
-        image_path = Path(
-            processed["choices"][0]["message"]["content"][1]["image_url"]["url"]
-        )
-        try:
-            assert image_path.read_bytes() == image_bytes
-            assert (
-                processed["choices"][0]["message"]["content"][0]["text"]
-                == "Here is the result."
-            )
-        finally:
-            image_path.unlink(missing_ok=True)
-
-    def test_process_string_content_in_custom_directory(self, tmp_path: Path) -> None:
-        """Save embedded image URLs found in string content."""
-        image_bytes = b"\xff\xd8\xfffake image data"
-        data_url = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode(
-            "ascii"
-        )
-        response = {
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": f"Generated image: {data_url}",
-                    }
-                }
-            ]
-        }
-        target_dir = tmp_path / "images"
-
-        processed = process_response_for_images(response, target_dir)
-
-        saved_path = Path(
-            processed["choices"][0]["message"]["content"].removeprefix(
-                "Generated image: "
-            )
-        )
-        assert saved_path.parent == target_dir
-        assert saved_path.read_bytes() == image_bytes
 
 
 class TestToolErrors:

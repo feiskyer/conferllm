@@ -14,7 +14,6 @@ from conferllm.images import (
     ImageValidationError,
     detect_image_mime,
     load_image_inputs,
-    process_response_for_images,
     replace_embedded_image_data,
 )
 
@@ -212,7 +211,7 @@ def test_chat_with_local_images(client, mock_config):
             mock_completion.return_value = mock_response
 
             # Call chat method
-            client.chat("test-model", messages)
+            client.chat("test-model", messages, system_prompt=None)
 
             # Verify that litellm was called with base64-encoded image
             called_messages = mock_completion.call_args[1]["messages"]
@@ -393,35 +392,6 @@ def test_recursive_output_extraction_preserves_multiple_image_order() -> None:
     assert uris[0].endswith("t0001-output-001")
     assert uris[1].endswith("t0001-output-002")
     assert processed["provider_images"][0]["url"] == uris[1]
-
-
-def test_response_image_batch_failure_removes_previously_moved_files(
-    tmp_path: Path,
-) -> None:
-    """Leave no partial final batch when a later atomic move fails."""
-    first = "data:image/png;base64," + base64.b64encode(PNG_BYTES).decode("ascii")
-    second = "data:image/png;base64," + base64.b64encode(PNG_BYTES).decode("ascii")
-    real_replace = __import__("os").replace
-    calls = 0
-
-    def fail_second_replace(source: Path, destination: Path) -> None:
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise OSError("disk full")
-        real_replace(source, destination)
-
-    with (
-        patch("conferllm.images.os.replace", side_effect=fail_second_replace),
-        pytest.raises(OSError, match="disk full"),
-    ):
-        process_response_for_images(
-            {"choices": [{"message": {"content": first + second}}]},
-            tmp_path,
-        )
-
-    assert list(tmp_path.glob("conferllm_image_*")) == []
-    assert list(tmp_path.glob(".conferllm-images-*")) == []
 
 
 def test_response_rejects_invalid_declared_image_content() -> None:

@@ -34,6 +34,13 @@ image_limits:
 # (e.g., chat(message="Hello", model="gpt-6-astra"))
 # The litellm_params configure the actual provider connection
 # Optional: Add system_prompt field to override global system prompt for specific models
+#
+# Reasoning display: the CLI shows each model's readable reasoning in its stderr
+# progress. When reasoning is enabled below, ConferLLM also requests readable
+# output: OpenAI Responses `reasoning.summary: auto`, and Anthropic
+# `thinking.display: summarized`. Set `summary: null` or `display: omitted`
+# yourself to opt out. DeepSeek reasoning models return reasoning without extra
+# settings.
 
 model_list:
   # ============================================================================
@@ -51,6 +58,7 @@ model_list:
       model: openai/gpt-6-astra
       api_key: "sk-your-openai-api-key-here"
       max_tokens: 128000
+      reasoning_effort: medium  # sent as reasoning.effort, plus summary: auto
 
   # ============================================================================
   # ANTHROPIC MODELS (Claude Series)
@@ -66,6 +74,8 @@ model_list:
       model: anthropic/claude-opus-5
       api_key: "sk-ant-your-anthropic-api-key-here"
       max_tokens: 128000
+      thinking:
+        type: adaptive  # the model decides when to think; display: summarized is added
 
   # ============================================================================
   # DEEPSEEK MODELS

@@ -31,7 +31,7 @@ from .images import (
     replace_provider_images,
 )
 from .outputs import assistant_choices, merge_assistant_messages
-from .progress import event, turn_progress
+from .progress import event, reasoning_text, turn_progress
 from .responses import (
     normalize_response_images,
     response_content,
@@ -204,7 +204,7 @@ class ChatService:
         name: str | None,
         message: str,
         image_payloads: list[ImagePayload],
-        output_dir: Path | None,
+        output_dir: Path,
         warnings: list[str],
         include_raw_response: bool,
     ) -> ChatResult:
@@ -212,6 +212,8 @@ class ChatService:
         session_id = self.session_store.generate_session_id(created_at)
         session_name = self.session_store.derive_session_name(message, name)
         transaction = self.session_store.artifact_transaction(session_id, 1)
+
+        system_prompt = self.client.system_prompt_for(model)
 
         with transaction:
             logical_user, provider_user = self._stage_user_message(
@@ -225,6 +227,7 @@ class ChatService:
                 [provider_user],
                 transaction,
                 schema_version=2,
+                system_prompt=system_prompt,
             )
             artifacts = list(transaction.artifacts)
             active_transaction = transaction if artifacts else None
@@ -242,6 +245,7 @@ class ChatService:
                     artifacts=artifacts,
                     artifact_transaction=active_transaction,
                     tool_messages=result.tool_messages,
+                    system_prompt=system_prompt,
                 )
             except Exception as error:
                 if result.tool_messages:
@@ -281,7 +285,7 @@ class ChatService:
         session_id: str,
         message: str,
         image_sources: list[str | Path],
-        output_dir: Path | None,
+        output_dir: Path,
         include_raw_response: bool,
     ) -> ChatResult:
         with self.session_store.lock(session_id):
@@ -323,6 +327,11 @@ class ChatService:
                     [*history, provider_user],
                     transaction,
                     schema_version=loaded.schema_version,
+                    system_prompt=(
+                        loaded.system_prompt
+                        if loaded.pins_system_prompt
+                        else self.client.system_prompt_for(loaded.metadata.model)
+                    ),
                 )
                 artifacts = list(transaction.artifacts)
                 active_transaction = transaction if artifacts else None
@@ -456,6 +465,7 @@ class ChatService:
         transaction: ArtifactTransaction,
         *,
         schema_version: int,
+        system_prompt: str | None,
     ) -> _ModelTurn:
         history = list(messages)
         intermediate: list[dict[str, Any]] = []
@@ -475,7 +485,9 @@ class ChatService:
                     progress.round = rounds + 1
                     check_cancelled()
                     model_started = perf_counter()
-                    raw = self.client.chat(model, list(history)).model_dump()
+                    raw = self.client.chat(
+                        model, list(history), system_prompt=system_prompt
+                    ).model_dump()
                     check_cancelled()
                     if not isinstance(raw, dict):
                         raise RuntimeError("Model response is not a JSON object.")
@@ -510,6 +522,7 @@ class ChatService:
                         "model.response",
                         elapsed_seconds=round(perf_counter() - model_started, 3),
                         text=text,
+                        reasoning=reasoning_text(provider_message),
                         tool_calls=len(calls),
                         output_images=len(outputs),
                     )
@@ -943,14 +956,11 @@ class ChatService:
     def _export_output_artifacts(
         session_id: str,
         artifacts: list[dict[str, Any]],
-        output_dir: Path | None,
+        output_dir: Path,
     ) -> list[str]:
-        if output_dir is None:
-            return []
-
-        warnings: list[str] = []
         if not any(artifact.get("direction") == "output" for artifact in artifacts):
-            return warnings
+            return []
+        warnings: list[str] = []
         try:
             prepare_image_output_dir(output_dir)
         except (OSError, ValueError):

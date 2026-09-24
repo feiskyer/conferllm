@@ -29,7 +29,6 @@ from conferllm.errors import normalize_error
 from conferllm.images import (
     ImageProcessingError,
     load_image_inputs,
-    process_response_for_images,
 )
 from conferllm.session import SessionError, SessionStore
 from conferllm.skill import install_skill
@@ -50,7 +49,9 @@ def test_same_session_concurrent_calls_replay_every_committed_turn(
     release = threading.Event()
     history_lengths: list[int] = []
 
-    def provider(model: str, messages: list[dict]) -> MagicMock:
+    def provider(
+        model: str, messages: list[dict], *, system_prompt: str | None
+    ) -> MagicMock:
         history_lengths.append(len(messages))
         if len(history_lengths) == 1:
             entered.set()
@@ -345,17 +346,3 @@ def test_create_permission_failure_closes_temporary_descriptor(
         with pytest.raises(OSError):
             os.fstat(descriptor)
     assert not list(store.root.rglob("*.tmp"))
-
-
-def test_legacy_image_helper_cleans_up_after_chmod_failure(tmp_path: Path) -> None:
-    output = tmp_path / "exports"
-    original_chmod = Path.chmod
-
-    def fail_final_chmod(path: Path, mode: int) -> None:
-        if path.parent == output and path.suffix == ".png":
-            raise OSError("chmod failed after rename")
-        original_chmod(path, mode)
-
-    with patch.object(Path, "chmod", fail_final_chmod), pytest.raises(OSError):
-        process_response_for_images({"content": DATA_URL}, output)
-    assert not list(output.iterdir())
