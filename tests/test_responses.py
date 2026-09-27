@@ -23,8 +23,9 @@ from conferllm.responses import (
     to_model_response,
     validate_response_state,
 )
+from conferllm.session import SessionStore
 from conferllm.tools import tool_definitions
-from tests.chat_fixtures import PNG
+from tests.chat_fixtures import PNG, response
 
 
 def native(output: list[dict], **fields: object) -> MagicMock:
@@ -141,6 +142,57 @@ def test_non_openai_providers_keep_their_existing_path(
         active.chat("test", [{"role": "user", "content": "hello"}], system_prompt=None)
     assert completion.call_args.kwargs["model"] == "anthropic/claude-test"
     assert not active.get_model_info("test")["uses_responses_api"]
+
+
+@pytest.mark.parametrize("api_format", ["responses", "chat_completion"])
+def test_harness_updates_only_change_new_session_prompts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, api_format: str
+) -> None:
+    """Prompt edits must not change the prefix sent for an existing session."""
+    active = client(tmp_path / "sessions", api_format)
+    active.config.global_system_prompt = "Shared project context."
+    original_prompt = active.system_prompt_for("test")
+    store = SessionStore(tmp_path / "sessions")
+    service = ChatService(active, store)
+
+    with (
+        patch(
+            "conferllm.client.litellm.responses",
+            return_value=native([message("done")]),
+        ) as responses_endpoint,
+        patch(
+            "conferllm.client.litellm.completion",
+            return_value=response("done"),
+        ) as completions_endpoint,
+    ):
+        first = service.chat("First question", model="test")
+        monkeypatch.setattr("conferllm.client.HARNESS_PROMPT", "Updated harness.")
+        updated_prompt = active.system_prompt_for("test")
+        service.chat("Follow-up", session_id=first.session_id)
+        fresh = service.chat("New question", model="test")
+
+    prompts = []
+    if api_format == "responses":
+        completions_endpoint.assert_not_called()
+        for call in responses_endpoint.call_args_list:
+            systems = [
+                item for item in call.kwargs["input"] if item.get("role") == "system"
+            ]
+            assert len(systems) == 1
+            prompts.append(systems[0]["content"][0]["text"])
+    else:
+        responses_endpoint.assert_not_called()
+        for call in completions_endpoint.call_args_list:
+            systems = [
+                item for item in call.kwargs["messages"] if item["role"] == "system"
+            ]
+            assert len(systems) == 1
+            prompts.append(systems[0]["content"])
+
+    assert original_prompt != updated_prompt
+    assert prompts == [original_prompt, original_prompt, updated_prompt]
+    assert store.load_session(first.session_id).system_prompt == original_prompt
+    assert store.load_session(fresh.session_id).system_prompt == updated_prompt
 
 
 def test_custom_provider_takes_precedence_over_model_name(tmp_path: Path) -> None:

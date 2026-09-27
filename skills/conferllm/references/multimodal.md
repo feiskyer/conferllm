@@ -1,6 +1,6 @@
 # Multimodal conversations
 
-Use this reference for requests with input images, generated images, or comparisons across configured models. Replace `MODEL` with the selected alias from `conferllm models --json`, not a presumed alias such as `vision`.
+Use this reference for image inputs, generated images, or image handling in model comparisons. Text-only comparisons do not need it. Replace `MODEL` with a known configured alias; use `conferllm models --json` if discovery is needed rather than presuming an alias such as `vision`.
 
 ## Multiple input and output images
 
@@ -91,8 +91,4 @@ conferllm chat --model MODEL_A --prompt-file ./prompt.md --image ./input.png --j
 conferllm chat --model MODEL_B --prompt-file ./prompt.md --image ./input.png --json
 ```
 
-1. Run each model independently and capture JSON output.
-2. Read `message.text` and `session.id` from each response.
-3. Compare actual returned answers and clearly attribute each answer to its respective model alias.
-4. If one model fails, report the error honestly as a gap rather than inventing an answer.
-5. Follow-ups must use the respective session ID belonging to that model.
+Compare the actual `message.text` results, attributed to their aliases, and retain each model's `session.id` for its own follow-ups. If a model fails, report the missing result; do not invent an answer or silently replace the model. Shared inputs should remain read-only; isolate workspaces when a comparison explicitly permits edits.

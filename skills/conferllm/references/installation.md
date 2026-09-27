@@ -1,6 +1,6 @@
 # Installation and configuration
 
-Use this reference when the executable is missing, diagnostics show incomplete configuration, or the user requests an installation update. ConferLLM requires Python 3.10+ and POSIX file locking on macOS/Linux; native Windows is not supported.
+Use this reference when the executable is missing, diagnostics show incomplete configuration, or the user requests an installation update. A consultation request alone does not authorize installing software or changing configuration; report missing setup unless that work is authorized. ConferLLM requires Python 3.10+ and POSIX file locking on macOS/Linux; native Windows is not supported.
 
 ## Install the binary
 

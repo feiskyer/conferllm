@@ -8,15 +8,19 @@
 # - Replace ALL placeholder API keys with your actual keys
 # - Set directory permissions: chmod 700 ~/.conferllm
 # - Set file permissions: chmod 600 ~/.conferllm/config.yaml
-# - NEVER commit this file to version control
+# - Never commit a populated copy containing real credentials
 # - Use environment variables or secret management for production
 
 # Global System Prompt (Optional)
 # --------------------------------
-# This system prompt will be applied to ALL models unless overridden by a model-specific prompt.
-# Useful for setting consistent behavior across all AI interactions.
-# Removal tip: Comment out or delete this line to disable global system prompts.
-global_system_prompt: "You are a helpful AI assistant. Be concise and accurate in your responses."
+# Omit this unless tasks need shared context the model would not otherwise have.
+# Put task goals, permitted changes, output format, and acceptance checks in the
+# chat prompt. Model identity and generic "helpful assistant" text are unnecessary.
+# global_system_prompt: "Shared project context or domain-specific constraints."
+#
+# A model's system_prompt overrides this setting; "" disables the global prompt.
+# ConferLLM still appends its short harness contract. Existing sessions retain
+# their original complete prompt; prompt changes apply to new sessions.
 
 # Image Safety Limits (Optional)
 # ------------------------------
@@ -49,7 +53,6 @@ model_list:
 
   - model_name: gpt-6-astra  # Frontier multimodal model (requires Responses API)
     api_format: responses  # Responses API (default for OpenAI)
-    system_prompt: "You are GPT-6 Astra, an advanced AI system with multimodal and deep tool reasoning capabilities."
     capabilities:
       input_modalities: [text, image]
       output_modalities: [text]
@@ -65,7 +68,6 @@ model_list:
   # ============================================================================
 
   - model_name: claude-opus-5  # Anthropic's flagship model
-    system_prompt: "You are Claude Opus 5, an AI assistant created by Anthropic. You excel at coding, architecture, deep reasoning, and multimodal analysis."
     capabilities:
       input_modalities: [text, image]
       output_modalities: [text]

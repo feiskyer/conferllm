@@ -1,48 +1,49 @@
 ---
 name: conferllm
-description: Consult the user's locally configured AI models through the ConferLLM CLI. Use when the user asks for another model's answer or review, a cross-model comparison, delegation to a specific model, or a follow-up in an existing ConferLLM session.
+description: Consult configured models via ConferLLM for a requested second opinion, model comparison, named-model task, or session follow-up. Not for ordinary coding/review or Codex setup.
 ---
 
 # ConferLLM Agent Skill
 
-The `conferllm` CLI sends a prompt to one of the user's configured model aliases, stores the conversation as a session, and returns JSON. Every delegated model can call 10 native host tools (`run_shell`, `run_powershell`, `shell_output`, `shell_kill`, `git_command`, `read_file`, `write_file`, `append_file`, `edit_file`, `list_directory`). They run with the OS user's permissions, without approval prompts or a sandbox, so the delegated prompt is the only thing that sets the model's scope.
+The `conferllm` CLI sends a prompt to a configured model alias and stores the conversation. Delegated models can read/write files and run shell, Git, and PowerShell commands on the host with the OS user's permissions. There is no approval gate or sandbox; prompt restrictions are guidance, not enforced access control.
 
-Use `conferllm doctor --json` and `conferllm models --json` to learn about the setup. Credentials live in `~/.conferllm/config.yaml` and session contents live in `~/.conferllm/sessions/`; do not read, print, or copy either. Attribute each answer to the model alias that produced it.
+Preserve the user's chosen model, session, task, and authorized scope. Do not read, print, or copy real configuration or private session files, including custom paths. Default locations are `~/.conferllm/config.yaml` and `~/.conferllm/sessions/`.
 
-## Commands
+## Choose the call
 
 ```bash
-conferllm models --json                     # configured aliases; use only these
-conferllm model-info MODEL                  # modalities, image limits, API format
+conferllm models --json
+conferllm model-info MODEL
 conferllm chat --model MODEL --prompt-file ./task.md --json
 conferllm chat --session SESSION_ID --prompt "Follow-up" --json
-conferllm sessions list --query TEXT --json # also --model, --since/--until YYYY-MM-DD, --limit
+conferllm sessions list --query TEXT --json
 ```
 
-- Use `--prompt TEXT` for short prompts and `--prompt-file` for long or multiline ones.
-- Attach images with repeated `--image PATH`; generated images go to `--image-output-dir` (default `/tmp`).
-- A continued session keeps its original model, so pass `--session` without `--model`. Stored history, including past tool calls, is replayed automatically; do not paste earlier turns into the prompt.
-- To compare models, run the same prompt file in one new session per alias.
+- Use a known alias or returned session ID directly. Discover aliases with `models --json` when needed; inspect `model-info` for relevant capabilities or limits. If the requested model is unavailable, report alternatives without silently switching.
+- Continue with `--session` and no `--model`; stored history, including tool results, is replayed automatically. Use filtered `sessions list` only when the requested session ID needs locating.
+- Use `--prompt TEXT` for short prompts, `--prompt-file` for longer ones, and `--json` for machine-readable results. Pass any selected `--config PATH` consistently.
+- For comparisons, use the same task in independent sessions and attribute each actual answer to its alias. Keep shared inputs read-only or isolate authorized edits so one model does not change another's inputs.
 
-In the JSON result (`conferllm.chat.response.v1`), read the answer from `message.text`, keep `session.id` for follow-ups, and read generated image paths from `artifacts[].saved_path` where `direction` is `"output"`. Check `warnings` even when the call succeeds.
+## Brief the delegated model
 
-## Writing the delegated prompt
+The parent agent's conversation and instructions are not passed automatically, and the caller cannot answer questions mid-turn. Supply the outcome, necessary context and paths, permitted actions, and observable completion criteria. Specify a response format only when the task needs one.
 
-The delegated model sees only your prompt and its session history, and you see only its final message. It cannot ask you questions mid-turn. Write the prompt the way you would brief a capable colleague who has no other context:
+- For a review, name the files or questions to inspect and keep the work read-only; analysis does not authorize implementation.
+- For implementation, state the allowed write scope, constraints to preserve, and relevant checks. Allow in-scope fixes and checks to finish; if missing authority or a material decision blocks progress, require a concrete handoff instead of expanded scope.
+- Include information the model cannot infer; avoid generic role descriptions or a fixed sequence of tools when the result does not depend on that sequence.
 
-- **Goal and context:** what you need and why, plus the paths, constraints, and findings it would otherwise have to rediscover.
-- **Scope and permissions:** say what it may change. For a review or opinion, write something like "Read whatever you need, but do not edit files or run commands that change state." For an implementation, say what it may modify and what it may run without asking, for example "The tests use temporary fixtures; run them, fix failures caused by this change, and rerun them."
-- **Done criteria:** what finished looks like, such as tests passing or a specific question answered, and where exploration should stop.
-- **Response shape:** what the final message should contain, for example findings with file:line references, a diff summary, or a verdict with reasons.
+## Read the result
 
-Treat the model's final message as a claim to verify, especially when it reports file changes or passing tests.
+In `conferllm.chat.response.v1`, read `message.text`, retain `session.id` for follow-ups, and check `warnings` even on success. Attribute the answer to its model alias and distinguish the model's claims from independently verified changes or checks.
 
-## When something goes wrong
+A successful chat is committed even with export warnings. Do not repeat it to recover an artifact. After a timeout or failed call, check the known outcome and possible side effects before retrying; file changes and commands are not rolled back.
 
-- Exit code 0 means success; 1 means a handled failure, with a `conferllm.error.v1` envelope on stderr (`error.code`, `error.message`); 2 means a CLI usage error. See [errors reference](references/errors.md) for codes, provider/API-format failures, and when retrying is unsafe. A failure after tool calls may have left side effects, so do not blindly retry it.
-- If `conferllm` is missing or doctor reports `ok: false`, follow [installation reference](references/installation.md).
-- For image inputs, limits, and generated images, see [multimodal reference](references/multimodal.md).
+Read only the reference needed for the current task:
+
+- [Errors and safe diagnostics](references/errors.md): failed commands, warnings, exit/JSON contracts, or configuration diagnosis with `doctor --json`.
+- [Installation](references/installation.md): a missing executable, incomplete setup, or an authorized install/update.
+- [Images](references/multimodal.md): image inputs, limits, generated files, or MCP image resources.
 
 ## MCP
 
-With `conferllm serve`, the same operations are available as MCP tools: `create_chat(message, model, ...)`, `continue_chat(message, session_id, ...)`, `list_sessions(...)`, `list_models()`, and `get_model_info(model)`.
+If ConferLLM is already exposed through MCP, use the corresponding `create_chat`, `continue_chat`, `list_sessions`, `list_models`, and `get_model_info` tools. Do not start another server just to make the same call.

@@ -24,6 +24,18 @@ def write_config(path: Path, config_data: dict[str, Any]) -> None:
     path.write_text(yaml.safe_dump(config_data), encoding="utf-8")
 
 
+def test_example_config_leaves_optional_prompts_unset() -> None:
+    """The public template is valid and adds no default model personas."""
+    example = Path(__file__).resolve().parents[1] / "config_example.yaml"
+    config = ConferLLMConfig.model_validate(
+        yaml.safe_load(example.read_text(encoding="utf-8"))
+    )
+
+    assert config.global_system_prompt is None
+    assert config.model_list
+    assert all(model.system_prompt is None for model in config.model_list)
+
+
 class TestModelConfig:
     """Test ModelConfig class."""
 
