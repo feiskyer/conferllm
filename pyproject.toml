@@ -4,7 +4,7 @@
 [project]
 # Package identification
 name = "conferllm"  # PyPI package name
-version = "0.2.4"  # Package version (follow semantic versioning)
+version = "0.2.5"  # Package version (follow semantic versioning)
 description = "A local CLI and MCP server for talking to configured AI models through LiteLLM."
 readme = "README.md"  # Long description from README file
 license = { file = "LICENSE" }
@@ -40,7 +40,7 @@ dependencies = [
 
     # Data validation and serialization
     # Used for configuration validation with type safety
-    "pydantic>=2.14.1,<3"
+    "pydantic>=2.14.2,<3"
 ]
 
 # Package classifiers for PyPI
@@ -63,11 +63,11 @@ classifiers = [
 dev = [
     # Testing framework
     # Core testing functionality for unit and integration tests
-    "pytest>=9.1.1",
+    "pytest>=9.2.0",
 
     # Async testing support
     # Enables testing of async functions and MCP server operations
-    "pytest-asyncio>=1.4.0",
+    "pytest-asyncio>=1.4.1",
 
     # Code coverage reporting
     # Measures test coverage and generates coverage reports
@@ -75,11 +75,11 @@ dev = [
 
     # Fast Python linter and formatter
     # Modern alternative to flake8, black, isort, and pylint
-    "ruff>=0.17.1",
+    "ruff>=0.17.3",
 
     # Static type checker
     # Ensures type safety and catches type-related bugs
-    "mypy>=2.4.0",
+    "mypy>=2.4.1",
 
     # Type stubs for PyYAML
     # Provides type information for YAML library
@@ -103,7 +103,7 @@ conferllm = "conferllm.cli:main"
 # `preview = true` is intentionally used instead of `preview-features`: older uv
 # releases understand this key, so they can enforce required-version instead of
 # discarding the entire table when they encounter an unknown setting.
-required-version = ">=0.12.9,<0.13"
+required-version = ">=0.12.9"
 preview = true
 
 
@@ -238,7 +238,7 @@ ignore_missing_imports = true
 # Defines how the package should be built and packaged
 [build-system]
 # Build backend requirements
-requires = ["hatchling>=1.32.4"]  # Modern Python build backend
+requires = ["hatchling>=1.33.0"]  # Modern Python build backend
 
 # Build backend to use
 build-backend = "hatchling.build"  # Hatchling handles packaging and distribution

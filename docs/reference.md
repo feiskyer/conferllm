@@ -297,7 +297,7 @@ Doctor reports safe metadata and suggested next steps. It exits nonzero when con
 
 ## Development
 
-For development, use `uv>=0.12.9,<0.13`. Clone the repository, or skip the first two commands if you already have a checkout:
+For development, use `uv>=0.12.9`. Clone the repository, or skip the first two commands if you already have a checkout:
 
 ```bash
 git clone https://github.com/feiskyer/mcp-ai-hub.git conferllm
