@@ -32,6 +32,7 @@ from .images import (
 )
 from .outputs import assistant_choices, merge_assistant_messages
 from .progress import event, reasoning_text, turn_progress
+from .prompt_cache import profile_changes
 from .responses import (
     normalize_response_images,
     response_content,
@@ -40,8 +41,9 @@ from .responses import (
 )
 from .session import LoadedSession, SessionStore
 from .tool_protocol import tool_calls
-from .tools import ToolRuntime
+from .tools import ToolRuntime, tool_definitions
 from .tools.common import check_cancelled
+from .usage import TokenUsage, normalize_usage
 
 CHAT_RESPONSE_SCHEMA_VERSION = "conferllm.chat.response.v1"
 MAX_TOOL_ROUNDS = 1000
@@ -55,7 +57,8 @@ class _ModelTurn:
     text: str
     content: list[dict[str, Any]]
     tool_messages: list[dict[str, Any]]
-    usage: dict[str, Any] | None
+    raw_usage: dict[str, Any] | None  # Summed in provider format for JSONL.
+    token_usage: TokenUsage | None
     warnings: list[str]
 
 
@@ -72,6 +75,8 @@ class ChatResult:
     content: list[dict[str, Any]] = field(default_factory=list)
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # Totals for every model call in the turn; None when none reported usage.
+    usage: TokenUsage | None = None
 
     @property
     def text(self) -> str:
@@ -115,6 +120,7 @@ class ChatResult:
             },
             "artifacts": artifacts,
             "warnings": list(self.warnings),
+            "usage": self.usage.to_dict() if self.usage is not None else None,
             # Compatibility fields retained for one public cycle.
             "session_id": self.session_id,
             "name": self.name,
@@ -213,7 +219,10 @@ class ChatService:
         session_name = self.session_store.derive_session_name(message, name)
         transaction = self.session_store.artifact_transaction(session_id, 1)
 
+        # Pinned in the header so every continuation replays the same prefix.
         system_prompt = self.client.system_prompt_for(model)
+        tools = tool_definitions()
+        request_profile = self.client.request_profile(model)
 
         with transaction:
             logical_user, provider_user = self._stage_user_message(
@@ -228,6 +237,7 @@ class ChatService:
                 transaction,
                 schema_version=2,
                 system_prompt=system_prompt,
+                tools=tools,
             )
             artifacts = list(transaction.artifacts)
             active_transaction = transaction if artifacts else None
@@ -240,12 +250,14 @@ class ChatService:
                     logical_user,
                     result.assistant,
                     response_id=self._response_id(result.response),
-                    usage=result.usage,
+                    usage=result.raw_usage,
                     created_at=created_at,
                     artifacts=artifacts,
                     artifact_transaction=active_transaction,
                     tool_messages=result.tool_messages,
                     system_prompt=system_prompt,
+                    tools=tools,
+                    request_profile=request_profile,
                 )
             except Exception as error:
                 if result.tool_messages:
@@ -277,6 +289,7 @@ class ChatService:
                 if include_raw_response
                 else None
             ),
+            usage=result.token_usage,
         )
 
     def _continue_session(
@@ -302,6 +315,7 @@ class ChatService:
                 image_count=len(image_sources),
                 history_image_count=history_image_count,
             )
+            warnings.extend(self._profile_warnings(loaded))
             image_payloads = load_image_inputs(
                 image_sources,
                 max_count=limits.max_count,
@@ -322,6 +336,7 @@ class ChatService:
                     schema_version=loaded.schema_version,
                 )
                 history = self._provider_history(loaded)
+                # Replay the pinned prefix; legacy headers resolve current values.
                 result = self._call_model(
                     loaded.metadata.model,
                     [*history, provider_user],
@@ -331,6 +346,9 @@ class ChatService:
                         loaded.system_prompt
                         if loaded.pins_system_prompt
                         else self.client.system_prompt_for(loaded.metadata.model)
+                    ),
+                    tools=(
+                        loaded.tools if loaded.tools is not None else tool_definitions()
                     ),
                 )
                 artifacts = list(transaction.artifacts)
@@ -343,7 +361,7 @@ class ChatService:
                         logical_user,
                         result.assistant,
                         response_id=self._response_id(result.response),
-                        usage=result.usage,
+                        usage=result.raw_usage,
                         artifacts=artifacts,
                         artifact_transaction=active_transaction,
                         tool_messages=result.tool_messages,
@@ -375,7 +393,24 @@ class ChatService:
                 if include_raw_response
                 else None
             ),
+            usage=result.token_usage,
         )
+
+    def _profile_warnings(self, loaded: LoadedSession) -> list[str]:
+        """Report settings changes that make providers reprocess the history."""
+        if loaded.request_profile is None:
+            return []
+        changed = profile_changes(
+            loaded.request_profile,
+            self.client.request_profile(loaded.metadata.model),
+        )
+        if not changed:
+            return []
+        return [
+            "Settings that shape this session's cached prompt changed since it "
+            f"was created ({', '.join(changed)}); the provider may reprocess the "
+            "full history without cache discounts."
+        ]
 
     def _stage_user_message(
         self,
@@ -466,10 +501,12 @@ class ChatService:
         *,
         schema_version: int,
         system_prompt: str | None,
+        tools: list[dict[str, Any]],
     ) -> _ModelTurn:
         history = list(messages)
         intermediate: list[dict[str, Any]] = []
         usage: dict[str, Any] = {}
+        token_usage: TokenUsage | None = None
         seen: set[str] = set()
         rounds = 0
         attempted = 0
@@ -486,7 +523,11 @@ class ChatService:
                     check_cancelled()
                     model_started = perf_counter()
                     raw = self.client.chat(
-                        model, list(history), system_prompt=system_prompt
+                        model,
+                        list(history),
+                        system_prompt=system_prompt,
+                        tools=tools,
+                        cache_key=transaction.session_id,
                     ).model_dump()
                     check_cancelled()
                     if not isinstance(raw, dict):
@@ -503,7 +544,15 @@ class ChatService:
                             "tool_call_limit_exceeded",
                             f"Model exceeded {MAX_TOOL_ROUNDS} tool rounds.",
                         )
-                    self._accumulate_usage(usage, self._usage(raw) or {})
+                    raw_usage = self._usage(raw)
+                    self._accumulate_usage(usage, raw_usage or {})
+                    round_usage = normalize_usage(raw_usage)
+                    if round_usage is not None:
+                        token_usage = (
+                            round_usage
+                            if token_usage is None
+                            else token_usage + round_usage
+                        )
                     artifact_start = len(transaction.artifacts)
                     processed = self._process_output_images(raw, transaction)
                     outputs = [
@@ -525,6 +574,9 @@ class ChatService:
                         reasoning=reasoning_text(provider_message),
                         tool_calls=len(calls),
                         output_images=len(outputs),
+                        usage=(
+                            round_usage.to_dict() if round_usage is not None else None
+                        ),
                     )
                     if not calls:
                         break
@@ -577,6 +629,7 @@ class ChatService:
             content,
             intermediate,
             usage or None,
+            token_usage,
             list(runtime.warnings),
         )
 

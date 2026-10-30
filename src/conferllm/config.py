@@ -79,6 +79,17 @@ class ModelCapabilities(BaseModel):
         return value
 
 
+class PromptCacheSettings(BaseModel):
+    """ConferLLM-managed provider prompt-cache hints for one model."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    enabled: bool = True
+    # Lifetime of explicit cache breakpoints; providers that cache
+    # automatically keep their own lifetime.
+    ttl: Literal["5m", "1h"] = "5m"
+
+
 class ModelConfig(BaseModel):
     """Configuration for a single AI model."""
 
@@ -89,6 +100,7 @@ class ModelConfig(BaseModel):
     api_format: Literal["responses", "chat_completion"] = "responses"
     system_prompt: str | None = None  # Optional system prompt for this model
     capabilities: ModelCapabilities | None = None
+    prompt_cache: PromptCacheSettings = Field(default_factory=PromptCacheSettings)
 
     @field_validator("model_name")
     @classmethod
@@ -108,8 +120,11 @@ class ModelConfig(BaseModel):
         for field in ("messages", "input"):
             if field in value:
                 raise ValueError(f"litellm_params.{field} is managed by ConferLLM.")
-        if "api_format" in value:
-            raise ValueError("Set api_format on the model, not inside litellm_params.")
+        for field in ("api_format", "prompt_cache"):
+            if field in value:
+                raise ValueError(
+                    f"Set {field} on the model, not inside litellm_params."
+                )
         return value
 
 

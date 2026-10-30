@@ -20,7 +20,7 @@ conferllm sessions list --query TEXT --json
 ```
 
 - Use a known alias or returned session ID directly. Discover aliases with `models --json` when needed; inspect `model-info` for relevant capabilities or limits. If the requested model is unavailable, report alternatives without silently switching.
-- Continue with `--session` and no `--model`; stored history, including tool results, is replayed automatically. Use filtered `sessions list` only when the requested session ID needs locating.
+- Continue with `--session` and no `--model`; stored history, including tool results, is replayed automatically, and providers can serve that replayed prefix from their prompt cache. A follow-up therefore costs far less than restating the context in a new session. Use filtered `sessions list` only when the requested session ID needs locating.
 - Use `--prompt TEXT` for short prompts, `--prompt-file` for longer ones, and `--json` for machine-readable results. Pass any selected `--config PATH` consistently.
 - For comparisons, use the same task in independent sessions and attribute each actual answer to its alias. Keep shared inputs read-only or isolate authorized edits so one model does not change another's inputs.
 
@@ -31,10 +31,11 @@ The parent agent's conversation and instructions are not passed automatically, a
 - For a review, name the files or questions to inspect and keep the work read-only; analysis does not authorize implementation.
 - For implementation, state the allowed write scope, constraints to preserve, and relevant checks. Allow in-scope fixes and checks to finish; if missing authority or a material decision blocks progress, require a concrete handoff instead of expanded scope.
 - Include information the model cannot infer; avoid generic role descriptions or a fixed sequence of tools when the result does not depend on that sequence.
+- When several sessions of one model share large material, put that stable context first in the prompt file and the specific request last, so providers can reuse the cached prefix.
 
 ## Read the result
 
-In `conferllm.chat.response.v1`, read `message.text`, retain `session.id` for follow-ups, and check `warnings` even on success. Attribute the answer to its model alias and distinguish the model's claims from independently verified changes or checks.
+In `conferllm.chat.response.v1`, read `message.text`, retain `session.id` for follow-ups, and check `warnings` even on success. `usage` reports the turn's token totals, including cached input. Attribute the answer to its model alias and distinguish the model's claims from independently verified changes or checks.
 
 A successful chat is committed even with export warnings. Do not repeat it to recover an artifact. After a timeout or failed call, check the known outcome and possible side effects before retrying; file changes and commands are not rolled back.
 

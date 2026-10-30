@@ -221,6 +221,9 @@ def messages_to_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 if native.get("type") == "function_call":
                     # call_id, not the optional output-item id, correlates results.
                     native.pop("id", None)
+                # Reasoning IDs replay verbatim: gateways such as LiteLLM encode
+                # the originating deployment into them for encrypted-content
+                # affinity and restore the provider's ID before forwarding.
                 result.append(native)
             continue
         if role == "tool":

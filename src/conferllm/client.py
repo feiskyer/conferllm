@@ -11,6 +11,7 @@ from typing import Any, cast
 import litellm
 from litellm.types.utils import ModelResponse
 
+from . import prompt_cache
 from .completions import CompletionCapture
 from .config import ConferLLMConfig, ModelConfig
 from .errors import ConferLLMError
@@ -116,6 +117,8 @@ class LLMClient:
         messages: list[dict[str, Any]],
         *,
         system_prompt: str | None,
+        tools: list[dict[str, Any]] | None = None,
+        cache_key: str | None = None,
     ) -> ModelResponse:
         """Chat with specified AI model.
 
@@ -143,10 +146,14 @@ class LLMClient:
                        ]}]
             system_prompt: Prompt to prepend. Sessions pin it at creation so
                      configuration edits cannot change a replayed prefix.
+            tools: Tool definitions pinned by the session for the same reason;
+                     None supplies the current built-in tools.
+            cache_key: Stable session identifier that keeps provider prompt
+                     caching for one conversation together.
 
         Returns:
-            Raw LiteLLM response from one provider request. Built-in tool schemas
-            are always supplied; ChatService owns tool execution and follow-ups.
+            Raw LiteLLM response from one provider request. Tool schemas are
+            always supplied; ChatService owns tool execution and follow-ups.
 
         Raises:
             ValueError: If model is not configured or messages format is invalid
@@ -188,7 +195,8 @@ class LLMClient:
                 if k not in {"model", "functions", "function_call"}
             }
             litellm_params["stream"] = False  # Explicitly disable streaming
-            litellm_params["tools"] = tool_definitions()
+            tool_schemas = tool_definitions() if tools is None else copy.deepcopy(tools)
+            litellm_params["tools"] = tool_schemas
             litellm_params["tool_choice"] = "auto"
             litellm_params["drop_params"] = False
             if isinstance(litellm_params.get("additional_drop_params"), list):
@@ -204,22 +212,28 @@ class LLMClient:
             if litellm_params.get("custom_llm_provider") == "ollama":
                 litellm_params["custom_llm_provider"] = "ollama_chat"
 
+            provider = self.provider_name(model_config)
             thinking = litellm_params.get("thinking")
             if (
-                self._is_anthropic_provider(model_config)
+                provider == "anthropic"
                 and isinstance(thinking, dict)
                 and thinking.get("type") in {"enabled", "adaptive"}
             ):
                 # Newer Claude models omit thinking text unless asked; keep an
                 # explicit display choice.
                 litellm_params["thinking"] = {"display": "summarized", **thinking}
+            litellm_params.update(
+                prompt_cache.request_hints(
+                    model_config, provider=provider, cache_key=cache_key
+                )
+            )
 
-            if self._is_openai_provider(model_config):
+            if provider == "openai":
                 if model_config.api_format == "responses":
                     native = litellm.responses(
                         model=litellm_model,
                         input=messages_to_input(prepared_messages),
-                        **prepare_responses_params(litellm_params, tool_definitions()),
+                        **prepare_responses_params(litellm_params, tool_schemas),
                     )
                     return to_model_response(native.model_dump(exclude_none=True))
                 # Honor an explicit legacy selection even when LiteLLM's model
@@ -262,26 +276,27 @@ class LLMClient:
             ) from None
 
     @staticmethod
-    def _is_anthropic_provider(model_config: ModelConfig) -> bool:
+    def provider_name(model_config: ModelConfig) -> str | None:
+        """Return LiteLLM's provider for a model, or None when it is unknown."""
         params = model_config.litellm_params
         explicit = params.get("custom_llm_provider")
         if explicit is not None:
-            return bool(explicit == "anthropic")
-        return str(params["model"]).startswith("anthropic/")
-
-    @staticmethod
-    def _is_openai_provider(model_config: ModelConfig) -> bool:
-        params = model_config.litellm_params
-        explicit = params.get("custom_llm_provider")
-        if explicit is not None:
-            return bool(explicit == "openai")
+            return str(explicit)
         model = str(params["model"])
         if "/" in model:
-            return model.split("/", 1)[0] == "openai"
+            return model.split("/", 1)[0]
         try:
-            return bool(litellm.get_llm_provider(model=model)[1] == "openai")
+            # Only the provider name is used; the tuple can hold an env API key.
+            return str(litellm.get_llm_provider(model=model)[1])
         except Exception:
-            return False
+            return None
+
+    @classmethod
+    def _uses_responses_api(cls, model_config: ModelConfig) -> bool:
+        return (
+            cls.provider_name(model_config) == "openai"
+            and model_config.api_format == "responses"
+        )
 
     def _is_local_path(self, url: str) -> bool:
         """Check if a URL is a local file path.
@@ -397,6 +412,14 @@ class LLMClient:
         )
         return f"{configured}\n\n{HARNESS_PROMPT}" if configured else HARNESS_PROMPT
 
+    def request_profile(self, model_name: str) -> dict[str, Any]:
+        """Return the non-secret settings that shape a session's cached prefix."""
+        model_config = self.require_model_config(model_name)
+        transport = (
+            "responses" if self._uses_responses_api(model_config) else "chat_completion"
+        )
+        return prompt_cache.request_profile(model_config, transport=transport)
+
     def list_models(self) -> list[str]:
         """List all available models."""
         return self.config.list_available_models()
@@ -503,11 +526,19 @@ class LLMClient:
             "model_name": model_config.model_name,
             "provider_model": model_config.litellm_params.get("model"),
             "api_format": model_config.api_format,
-            "uses_responses_api": (
-                self._is_openai_provider(model_config)
-                and model_config.api_format == "responses"
-            ),
+            "uses_responses_api": self._uses_responses_api(model_config),
             "configured_params": list(model_config.litellm_params.keys()),
+            "prompt_cache": {
+                **model_config.prompt_cache.model_dump(),
+                # Provider parameters ConferLLM adds to each session's requests.
+                "request_hints": sorted(
+                    prompt_cache.request_hints(
+                        model_config,
+                        provider=self.provider_name(model_config),
+                        cache_key="<session-id>",
+                    )
+                ),
+            },
             "has_model_system_prompt": model_config.system_prompt is not None,
             "uses_global_system_prompt": (
                 model_config.system_prompt is None

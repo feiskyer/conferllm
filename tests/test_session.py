@@ -757,6 +757,72 @@ def test_session_header_rejects_a_non_string_system_prompt(tmp_path: Path) -> No
         )
 
 
+PINNED_TOOLS = [{"type": "function", "function": {"name": "read_file"}}]
+
+
+def test_session_header_pins_tools_and_request_profile(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    store.create_session(
+        SESSION_ID,
+        "name",
+        "reasoning",
+        USER_MESSAGE,
+        ASSISTANT_MESSAGE,
+        created_at=CREATED_AT,
+        system_prompt="Pinned prompt",
+        tools=PINNED_TOOLS,
+        request_profile={"transport": "responses", "reasoning_effort": "low"},
+    )
+
+    header = json.loads(
+        store.session_path(SESSION_ID).read_text(encoding="utf-8").splitlines()[0]
+    )
+    loaded = store.load_session(SESSION_ID)
+
+    assert header["tools"] == PINNED_TOOLS
+    assert loaded.tools == PINNED_TOOLS
+    assert loaded.request_profile == {
+        "transport": "responses",
+        "reasoning_effort": "low",
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("tools", {"name": "read_file"}, "tools must be"),
+        ("tools", [{"type": "function", "function": {}}], "tools must be"),
+        ("request_profile", ["responses"], "request profile must be"),
+    ],
+)
+def test_session_header_rejects_invalid_pinned_request_fields(
+    tmp_path: Path, field: str, value: Any, reason: str
+) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    _create(store)
+    session_file = store.session_path(SESSION_ID)
+    header, *rest = session_file.read_text(encoding="utf-8").splitlines()
+    record = json.loads(header)
+    record[field] = value
+    session_file.write_text(
+        "\n".join([json.dumps(record), *rest]) + "\n", encoding="utf-8"
+    )
+
+    with pytest.raises(SessionError, match=reason) as raised:
+        store.load_session(SESSION_ID)
+    assert raised.value.code == "session_corrupt"
+    with pytest.raises(SessionError, match=f"Session {reason}"):
+        store.create_session(
+            f"20260904-{uuid.uuid4().hex}",
+            "name",
+            "reasoning",
+            USER_MESSAGE,
+            ASSISTANT_MESSAGE,
+            created_at=CREATED_AT,
+            **{field: value},
+        )
+
+
 def test_list_sessions_date_range_spans_years_and_months(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions")
     days = [date(2024, 6, 1), date(2025, 12, 31), date(2026, 1, 1), date(2026, 2, 15)]

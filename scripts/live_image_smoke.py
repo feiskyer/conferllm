@@ -57,13 +57,13 @@ def run(model: str, directory: Path) -> dict[str, Any]:
             super().__init__(client, SessionStore(directory / "sessions"))
 
     def observed_chat(
-        client: LLMClient, alias: str, messages: list[dict[str, Any]]
+        client: LLMClient, alias: str, messages: list[dict[str, Any]], **request: Any
     ) -> Any:
         print(
             json.dumps({"model": alias, "phase": phase, "calling_real_model": True}),
             flush=True,
         )
-        return original_chat(client, alias, messages)
+        return original_chat(client, alias, messages, **request)
 
     def observed_send(
         client: httpx.Client, request: httpx.Request, **kwargs: Any

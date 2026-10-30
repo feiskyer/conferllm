@@ -4,7 +4,7 @@
 [project]
 # Package identification
 name = "conferllm"  # PyPI package name
-version = "0.2.3"  # Package version (follow semantic versioning)
+version = "0.2.4"  # Package version (follow semantic versioning)
 description = "A local CLI and MCP server for talking to configured AI models through LiteLLM."
 readme = "README.md"  # Long description from README file
 license = { file = "LICENSE" }
@@ -22,7 +22,7 @@ requires-python = ">=3.10"
 dependencies = [
     # MCP (Model Context Protocol) server implementation
     # Provides the core MCP server functionality and protocol handling
-    "mcp>=2.1.1,<3",
+    "mcp>=2.3.0,<3",
 
     # LiteLM - Unified API for 100+ AI providers
     # Handles API calls to OpenAI, Anthropic, Google, Azure, AWS Bedrock, etc.
@@ -40,7 +40,7 @@ dependencies = [
 
     # Data validation and serialization
     # Used for configuration validation with type safety
-    "pydantic>=2.13.5,<3"
+    "pydantic>=2.14.1,<3"
 ]
 
 # Package classifiers for PyPI
@@ -75,15 +75,15 @@ dev = [
 
     # Fast Python linter and formatter
     # Modern alternative to flake8, black, isort, and pylint
-    "ruff>=0.16.6",
+    "ruff>=0.17.1",
 
     # Static type checker
     # Ensures type safety and catches type-related bugs
-    "mypy>=2.3.1",
+    "mypy>=2.4.0",
 
     # Type stubs for PyYAML
     # Provides type information for YAML library
-    "types-pyyaml>=6.0.12.20260815",
+    "types-pyyaml>=6.0.12.20260906",
 
     # Git hook framework
     # Runs code quality checks before commits
@@ -238,7 +238,7 @@ ignore_missing_imports = true
 # Defines how the package should be built and packaged
 [build-system]
 # Build backend requirements
-requires = ["hatchling>=1.32.0"]  # Modern Python build backend
+requires = ["hatchling>=1.32.4"]  # Modern Python build backend
 
 # Build backend to use
 build-backend = "hatchling.build"  # Hatchling handles packaging and distribution

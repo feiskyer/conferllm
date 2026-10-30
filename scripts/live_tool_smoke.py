@@ -33,9 +33,12 @@ from conferllm.errors import ConferLLMError
 from conferllm.session import SessionStore
 from conferllm.tools import TOOLS, ToolRuntime
 from conferllm.tools.common import cancellation_scope
+from conferllm.usage import normalize_usage
 
-FOREGROUND = "printf 'SHELL_SMOKE_OK\\n'"
-BACKGROUND = "printf 'BACKGROUND_SMOKE_READY\\n'; sleep 300"
+# The prompt shows commands JSON-quoted; escape sequences would be ambiguous
+# there, so the exact-match scope check could reject a literal copy.
+FOREGROUND = "echo SHELL_SMOKE_OK"
+BACKGROUND = "echo BACKGROUND_SMOKE_READY; sleep 300"
 POWERSHELL = "Write-Output 'POWERSHELL_SMOKE_OK'"
 
 
@@ -437,7 +440,7 @@ def run(
         )
 
     def observed_chat(
-        client: LLMClient, alias: str, messages: list[dict[str, Any]]
+        client: LLMClient, alias: str, messages: list[dict[str, Any]], **request: Any
     ) -> Any:
         if sum(item["phase"] == phase for item in receipts) >= 16:
             raise ConferLLMError(
@@ -456,13 +459,16 @@ def run(
             flush=True,
         )
         try:
-            result = original_chat(client, alias, messages)
+            result = original_chat(client, alias, messages, **request)
             data = result.model_dump()
+            token_usage = normalize_usage(data.get("usage"))
             receipt.update(
                 {
                     "response_id": data.get("id"),
                     "provider_model": data.get("model"),
                     "usage": data.get("usage"),
+                    # Later calls in a session should show cached input tokens.
+                    "token_usage": token_usage.to_dict() if token_usage else None,
                     "finish_reason": (data.get("choices") or [{}])[0].get(
                         "finish_reason"
                     ),

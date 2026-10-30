@@ -19,6 +19,8 @@ from conferllm.config import (
 )
 from conferllm.images import ImageProcessingError
 from conferllm.session import SessionStore
+from conferllm.tools import tool_definitions
+from conferllm.usage import TokenUsage
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\nminimal-png"
 JPEG_BYTES = b"\xff\xd8\xffminimal-jpeg"
@@ -38,6 +40,7 @@ def make_client() -> MagicMock:
         [],
     )
     client.system_prompt_for.return_value = None
+    client.request_profile.return_value = {"transport": "chat_completion"}
     return client
 
 
@@ -179,6 +182,129 @@ def test_sessions_without_a_pinned_prompt_use_the_current_configuration(
 
     assert client.chat.call_args_list[1].kwargs["system_prompt"] == "Current prompt"
     client.system_prompt_for.assert_called_with("reasoning")
+
+
+def edited_tool_definitions() -> list[dict]:
+    edited = tool_definitions()
+    edited[0]["function"]["description"] = "Edited description."
+    return edited
+
+
+def test_continuation_replays_the_tool_definitions_pinned_at_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Upgrades that edit built-in tools must not change an existing prefix."""
+    client = make_client()
+    client.chat.side_effect = [make_response(text) for text in ("A", "B", "C")]
+    store = SessionStore(tmp_path / "sessions")
+    service = ChatService(client, store)
+    original = tool_definitions()
+    first = service.chat("First question", model="reasoning")
+
+    monkeypatch.setattr("conferllm.chat.tool_definitions", edited_tool_definitions)
+    service.chat("Follow-up", session_id=first.session_id)
+    fresh = service.chat("New question", model="reasoning")
+
+    tools = [call.kwargs["tools"] for call in client.chat.call_args_list]
+    assert tools == [original, original, edited_tool_definitions()]
+    assert store.load_session(first.session_id).tools == original
+    assert store.load_session(fresh.session_id).tools == edited_tool_definitions()
+
+
+def test_sessions_without_pinned_tools_use_the_current_definitions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Headers written before tool pinning resolve tools and skip comparisons."""
+    client = make_client()
+    client.chat.side_effect = [make_response("First"), make_response("Second")]
+    store = SessionStore(tmp_path / "sessions")
+    service = ChatService(client, store)
+    first = service.chat("First question", model="reasoning")
+    session_file = store.session_path(first.session_id)
+    header, *rest = session_file.read_text(encoding="utf-8").splitlines()
+    legacy = json.loads(header)
+    del legacy["tools"], legacy["request_profile"]
+    session_file.write_text(
+        "\n".join([json.dumps(legacy), *rest]) + "\n", encoding="utf-8"
+    )
+
+    monkeypatch.setattr("conferllm.chat.tool_definitions", edited_tool_definitions)
+    client.request_profile.return_value = {"transport": "responses"}
+    second = service.chat("Follow-up", session_id=first.session_id)
+
+    assert client.chat.call_args_list[1].kwargs["tools"] == edited_tool_definitions()
+    assert second.warnings == []
+
+
+def test_continuations_report_changed_prefix_settings(tmp_path: Path) -> None:
+    """Configuration edits that force providers to reprocess history are visible."""
+    client = make_client()
+    client.chat.side_effect = [make_response(text) for text in ("A", "B", "C")]
+    service = ChatService(client, SessionStore(tmp_path / "sessions"))
+    client.request_profile.return_value = {
+        "transport": "responses",
+        "reasoning_effort": "low",
+    }
+    first = service.chat("First question", model="reasoning")
+    unchanged = service.chat("Follow-up", session_id=first.session_id)
+
+    client.request_profile.return_value = {
+        "transport": "responses",
+        "reasoning_effort": "high",
+    }
+    changed = service.chat("Again", session_id=first.session_id)
+
+    assert unchanged.warnings == []
+    assert changed.warnings == [
+        "Settings that shape this session's cached prompt changed since it was "
+        "created (reasoning_effort); the provider may reprocess the full history "
+        "without cache discounts."
+    ]
+
+
+def test_every_model_call_uses_the_session_id_as_its_cache_key(
+    tmp_path: Path,
+) -> None:
+    client = make_client()
+    client.chat.side_effect = [make_response("First"), make_response("Second")]
+    service = ChatService(client, SessionStore(tmp_path / "sessions"))
+
+    first = service.chat("First question", model="reasoning")
+    service.chat("Follow-up", session_id=first.session_id)
+
+    assert [call.kwargs["cache_key"] for call in client.chat.call_args_list] == [
+        first.session_id,
+        first.session_id,
+    ]
+
+
+def test_turn_usage_is_normalized_and_returned(tmp_path: Path) -> None:
+    client = make_client()
+    reply = make_response("Answer")
+    reply.model_dump.return_value["usage"] = {
+        "prompt_tokens": 1200,
+        "completion_tokens": 30,
+        "prompt_tokens_details": {"cached_tokens": 1000},
+        "cache_creation_input_tokens": 150,
+    }
+    silent = make_response("Quiet")
+    del silent.model_dump.return_value["usage"]
+    client.chat.side_effect = [reply, silent]
+    service = ChatService(client, SessionStore(tmp_path / "sessions"))
+
+    result = service.chat("Question", model="reasoning")
+    quiet = service.chat("Follow-up", session_id=result.session_id)
+
+    assert result.usage == TokenUsage(1200, 1000, 150, 30)
+    assert result.to_dict()["usage"] == {
+        "input_tokens": 1200,
+        "cached_input_tokens": 1000,
+        "cache_write_tokens": 150,
+        "output_tokens": 30,
+        "cache_hit_ratio": 0.8333,
+    }
+    assert quiet.usage is None
+    assert quiet.to_dict()["usage"] is None
 
 
 def test_app_directory_move_preserves_session_and_image_replay(

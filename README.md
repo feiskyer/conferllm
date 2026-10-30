@@ -127,6 +127,8 @@ model_list:
 
 *Tip:* See [config_example.yaml](config_example.yaml) for more provider templates including Gemini 3.8 Flash, Qwen 3 Coder, Mistral Large, Together AI, Hugging Face, Azure, and AWS Bedrock.
 
+Provider prompt caching is enabled for you: sessions replay a stable prefix, Claude requests get cache breakpoints, and supported providers get a per-session cache key. See [Prompt caching](docs/reference.md#prompt-caching) for the per-model `prompt_cache` setting.
+
 ### 3. Run Your First Chat
 
 ```bash
@@ -238,7 +240,14 @@ conferllm chat --model gpt-6-astra --prompt "Explain Raft." --json
     ]
   },
   "artifacts": [],
-  "warnings": []
+  "warnings": [],
+  "usage": {
+    "input_tokens": 1830,
+    "cached_input_tokens": 1024,
+    "cache_write_tokens": 0,
+    "output_tokens": 412,
+    "cache_hit_ratio": 0.5596
+  }
 }
 ```
 
@@ -248,6 +257,7 @@ Key fields:
 - `message.text`: The complete assistant answer (with image payloads replaced by saved paths).
 - `artifacts`: List of turn artifacts (images input/output, paths, mime types, hashes).
 - `warnings`: Non-fatal notices (e.g. background processes stopped at turn end).
+- `usage`: Token totals for every model call in the turn, including provider prompt-cache reads and writes (`null` if the provider reports none).
 
 ### 3. Long Prompts from Files
 

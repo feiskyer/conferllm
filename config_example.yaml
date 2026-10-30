@@ -45,6 +45,17 @@ image_limits:
 # `thinking.display: summarized`. Set `summary: null` or `display: omitted`
 # yourself to opt out. DeepSeek reasoning models return reasoning without extra
 # settings.
+#
+# Prompt caching: sessions replay a byte-stable prefix, so repeated input is
+# billed at each provider's cached rate. ConferLLM also adds cache breakpoints
+# for Claude routes and a per-session cache key where the provider supports
+# one. An optional per-model `prompt_cache` block controls this:
+#   prompt_cache:
+#     enabled: true  # false stops ConferLLM-managed cache hints
+#     ttl: 5m        # 5m or 1h lifetime for Claude cache breakpoints
+# Local servers: set Ollama's `num_ctx` large enough that prompts are never
+# truncated, and use a chat template that keeps replayed reasoning (for example
+# vLLM `extra_body: {chat_template_kwargs: {preserve_thinking: true}}`).
 
 model_list:
   # ============================================================================
@@ -72,6 +83,8 @@ model_list:
       input_modalities: [text, image]
       output_modalities: [text]
       max_input_images: 16
+    prompt_cache:
+      ttl: 5m  # 1h suits follow-ups sent 5-60 minutes apart; its writes cost 2x
     litellm_params:
       model: anthropic/claude-opus-5
       api_key: "sk-ant-your-anthropic-api-key-here"

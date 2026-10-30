@@ -245,6 +245,22 @@ def _tool_output(output: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _usage_text(usage: dict[str, Any]) -> str:
+    """Summarize one call's tokens, including provider prompt-cache activity."""
+    cache = [
+        f"{usage[key]:,} {label}"
+        for key, label in (
+            ("cached_input_tokens", "cached"),
+            ("cache_write_tokens", "cache writes"),
+        )
+        if usage.get(key)
+    ]
+    text = f"{usage.get('input_tokens', 0):,} input tokens"
+    if cache:
+        text += f" ({', '.join(cache)})"
+    return f"{text}, {usage.get('output_tokens', 0):,} output tokens"
+
+
 def _prompt_text(messages: list[dict[str, Any]]) -> str:
     lines = []
     for message in messages:
@@ -288,6 +304,8 @@ def _format_event(data: dict[str, Any]) -> str:
         title += elapsed
         if data.get("output_images"):
             title += f"; {data['output_images']} image(s)"
+        if data.get("usage"):
+            title += f"; {_usage_text(data['usage'])}"
         # The final answer is printed on stdout; only intermediate text repeats.
         pieces = []
         if data.get("reasoning"):

@@ -79,6 +79,9 @@ class LoadedSession:
     # Headers written before prompts were pinned omit the field entirely.
     pins_system_prompt: bool = False
     system_prompt: str | None = None
+    # None when the header predates pinning tools or the request profile.
+    tools: list[dict[str, Any]] | None = None
+    request_profile: dict[str, Any] | None = None
 
     def artifact(self, artifact_id: str) -> Artifact | None:
         """Return referenced artifact metadata by ID."""
@@ -277,15 +280,22 @@ class SessionStore:
         artifact_transaction: ArtifactTransaction | None = None,
         tool_messages: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        request_profile: dict[str, Any] | None = None,
     ) -> SessionMetadata:
         """Atomically create a session containing its first complete turn.
 
-        ``system_prompt`` is the prompt actually sent for turn 1. It is pinned
-        so continuations replay the same prefix after configuration changes.
+        ``system_prompt`` and ``tools`` are what turn 1 actually sent. They are
+        pinned so continuations replay the same prefix after configuration or
+        version changes. ``request_profile`` records the settings that shape
+        the provider's cached prefix, so later changes can be reported.
         """
         session_file = self.session_path(session_id)
         if system_prompt is not None and not isinstance(system_prompt, str):
             raise SessionError("System prompt must be a string or null.")
+        pinned_error = self._pinned_request_error(tools, request_profile)
+        if pinned_error is not None:
+            raise SessionError(f"Session {pinned_error}.")
         normalized_name = derive_session_name("", explicit_name=name)
         normalized_model = self._validate_model(model)
         timestamp = self._normalize_datetime(created_at)
@@ -322,12 +332,16 @@ class SessionStore:
             model=normalized_model,
             created_at=timestamp,
         )
-        header = {
+        header: dict[str, Any] = {
             "type": "session",
             "schema_version": SCHEMA_VERSION,
             **metadata.to_dict(),
             "system_prompt": system_prompt,
         }
+        if tools is not None:
+            header["tools"] = tools
+        if request_profile is not None:
+            header["request_profile"] = request_profile
         turn = self._turn_record(
             turn=1,
             user_message=user_message,
@@ -438,6 +452,11 @@ class SessionStore:
                 raise self._corruption(
                     session_id, 1, "system prompt must be a string or null"
                 )
+            tools = header.get("tools")
+            request_profile = header.get("request_profile")
+            pinned_error = self._pinned_request_error(tools, request_profile)
+            if pinned_error is not None:
+                raise self._corruption(session_id, 1, pinned_error)
             messages: list[dict[str, Any]] = []
             turns: list[dict[str, Any]] = []
             artifacts: list[Artifact] = []
@@ -490,6 +509,8 @@ class SessionStore:
             artifacts=artifacts,
             pins_system_prompt=pins_system_prompt,
             system_prompt=system_prompt,
+            tools=tools,
+            request_profile=request_profile,
         )
 
     def append_turn(
@@ -877,6 +898,23 @@ class SessionStore:
         if not isinstance(model, str) or not model.strip():
             raise SessionError("Session model must not be empty.")
         return model
+
+    @staticmethod
+    def _pinned_request_error(tools: Any, request_profile: Any) -> str | None:
+        """Describe invalid pinned request fields; None means valid or absent."""
+        if tools is not None and not (
+            isinstance(tools, list)
+            and all(
+                isinstance(tool, dict)
+                and isinstance(tool.get("function"), dict)
+                and isinstance(tool["function"].get("name"), str)
+                for tool in tools
+            )
+        ):
+            return "tools must be an array of function definitions"
+        if request_profile is not None and not isinstance(request_profile, dict):
+            return "request profile must be an object"
+        return None
 
     @staticmethod
     def _normalize_datetime(value: datetime | None) -> datetime:

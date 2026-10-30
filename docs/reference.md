@@ -65,7 +65,7 @@ model_list:
 
 Responses sends flat function definitions and typed `input` items. It preserves native function `call_id` values and all returned reasoning items when replaying tool results; it does not substitute the separate output-item `id`. Local conversation state is used with `store=false` by default and encrypted reasoning requested. Tool schemas explicitly use `strict=false` to preserve existing optional/default parameters, while local argument validation remains enabled. `max_tokens`/`max_completion_tokens` map to `max_output_tokens`, `reasoning_effort` maps to `reasoning`, and `response_format` maps to `text.format`. Chat-only parameters such as `stop`, `logprobs`, or `n>1` produce an explicit configuration error; select `chat_completion` when the endpoint requires that protocol. There is no automatic protocol downgrade.
 
-Replayed assistant text uses `output_text`, with its original `phase` retained; user/system/developer text uses `input_text`. Optional message/function output-item IDs are not echoed, avoiding oversized IDs returned by some compatible endpoints. Required reasoning state remains intact. Generated images are supplied as separate image inputs explicitly attributed to the assistant, since assistant output messages do not accept `input_image`. Their order and the original internal history are preserved.
+Replayed assistant text uses `output_text`, with its original `phase` retained; user/system/developer text uses `input_text`. Optional message/function output-item IDs are not echoed, avoiding oversized IDs returned by some compatible endpoints. Reasoning items, including their IDs and encrypted content, are replayed exactly as returned: gateways such as LiteLLM encode the originating deployment into them (`encrypted_content_affinity`) and must receive them unchanged. Generated images are supplied as separate image inputs explicitly attributed to the assistant, since assistant output messages do not accept `input_image`. Their order and the original internal history are preserved.
 
 GPT-6 Astra requires Responses for tool calling. See the official [function-calling guide](https://developers.openai.com/api/docs/guides/function-calling) and [Responses migration guide](https://developers.openai.com/api/docs/guides/migrate-to-responses) for the protocol differences.
 
@@ -75,12 +75,48 @@ Optional settings:
 - A model's `system_prompt`: overrides the global prompt; `""` disables the configured global prompt, not the harness contract. The example configuration leaves both unset instead of repeating model identities or generic assistant instructions.
 - Reasoning shown in progress output: when a model enables reasoning, ConferLLM asks for readable output. OpenAI Responses `reasoning` (or `reasoning_effort`) gets `summary: auto`, and Anthropic `thinking` with type `enabled` or `adaptive` gets `display: summarized`. An explicit `summary` or `display` value, including `null` or `omitted`, is kept. Enabling reasoning itself stays a per-model choice because it changes cost and latency.
 - ConferLLM appends a short harness contract after the configured prompt (or sends it alone when none is configured). The caller cannot answer mid-turn. The model should finish authorized work and relevant checks, preserve unrelated work, keep analysis/review read-only unless edits are authorized, and stop an affected action when a decision or additional permission is needed. It should check for side effects before retrying state-changing work and return a self-contained result in the requested format, distinguishing verified, failed, and unfinished work. These are prompt instructions, not enforced permissions. The text is `HARNESS_PROMPT` in `src/conferllm/client.py`.
-- A session pins the complete prompt it was created with, so editing either setting affects only new sessions. Providers that bind reasoning to the exact request prefix (such as Claude thinking blocks) keep working after configuration edits. Sessions created before prompt pinning resolve the current setting on every turn.
+- A session pins the complete prompt and the built-in tool definitions it was created with, so editing either prompt setting or upgrading ConferLLM affects only new sessions. Providers that bind reasoning to the exact request prefix (such as Claude thinking blocks) keep working after configuration edits. Sessions created before prompt or tool pinning resolve the current values on every turn.
 - `sessions_dir`: overrides the session root. Relative YAML paths resolve beside the configuration file, independently of the caller's working directory.
 - `image_limits`: limits new images per turn. Defaults are 16 images, 20 MiB per image, and 50 MiB in total.
 - A model's `capabilities`: declares input/output modalities and an optional `max_input_images`. These declarations guide validation, not provider discovery.
+- A model's `prompt_cache`: controls ConferLLM-managed provider cache hints; see [Prompt caching](#prompt-caching).
 
 Use `--config PATH` to select another file. An explicitly selected missing file is an error. ConferLLM does not create, populate, or automatically migrate provider credentials.
+
+### Prompt caching
+
+Every request replays the session's pinned system prompt, pinned tools, and complete history in their original order, so each request extends the previous one byte for byte and providers can bill the repeated prefix at their cached-input rate. ConferLLM adds these per-request hints on top of that prefix; they are never stored in the session:
+
+| Route | Hint |
+| --- | --- |
+| Claude on `anthropic/`, `vertex_ai/`, `bedrock/`, `openrouter/`, or `azure_ai/` | Cache breakpoints on the system prompt and the latest message (`cache_control_injection_points`) |
+| OpenAI models before GPT-5.6 | `prompt_cache_key` set to the session ID, which routes one session's requests to the same cache |
+| Kimi (`moonshot/`) and Mistral | `prompt_cache_key` set to the session ID |
+| OpenRouter | `session_id` set to the session ID |
+| xAI | `x-grok-conv-id` header set to the session ID |
+
+Other providers, including OpenAI GPT-5.6 and later, Gemini, DeepSeek, and local servers, cache matching prefixes automatically. Session keys go only to each provider's official endpoint, because compatible gateways may reject unknown parameters. Configured `litellm_params` such as `cache_control`, `cache_control_injection_points`, `prompt_cache_key`, `session_id`, or an `x-grok-conv-id` header take precedence. `model-info` lists the hints that apply under `prompt_cache.request_hints`.
+
+```yaml
+- model_name: claude-opus-5
+  prompt_cache:
+    enabled: true  # false stops ConferLLM-managed hints for this model
+    ttl: 1h        # 5m (default) or 1h, for Claude breakpoints
+  litellm_params:
+    model: anthropic/claude-opus-5
+```
+
+Claude cache writes cost more than uncached input (1.25x for 5 minutes, 2x for 1 hour) and reads cost a small fraction of it. Five minutes covers tool loops; one hour suits follow-ups sent 5–60 minutes apart. Lifetimes count from the start of a request, so a long response followed by a long command can outlast five minutes. Prompts below a provider's minimum cacheable length are billed normally.
+
+Reuse also depends on the provider and model:
+
+- Claude models before Opus 4.5 and Sonnet 4.6, and all Haiku models, drop earlier turns' thinking, so a follow-up reuses the cache only up to the previous user message. OpenAI models before GPT-5.6 likewise do not render earlier turns' reasoning.
+- Local servers need a chat template that keeps replayed reasoning, for example `extra_body: {chat_template_kwargs: {preserve_thinking: true}}` for Qwen3.6 or later on vLLM. For GLM, keep earlier reasoning with its `clear_thinking: false` thinking option.
+- Ollama drops the start of prompts that exceed its context length, which changes the prefix on every request and loses history; set `num_ctx` large enough and keep model options unchanged.
+- OpenAI organizations with Zero Data Retention default to the in-memory cache lifetime; models before GPT-5.6 that support it accept `prompt_cache_retention: 24h`.
+- Claude Fable 5.1 and Opus 5.5 reject replayed thinking whose prefix changed. Pinning prevents that; ConferLLM does not enable the `thinking.block_binding` drop behavior, because LiteLLM does not report dropped blocks.
+
+Continuations warn when settings that shape the cached prefix (the provider model, transport, reasoning or thinking options, output format, service tier, and similar) changed since the session was created, because the provider must then reprocess the history at the uncached rate.
 
 ## JSON output
 
@@ -101,17 +137,24 @@ Request `--json` for scripts and agents. The stable chat response envelope is `c
     "content": [{"type": "text", "text": "The answer..."}]
   },
   "artifacts": [],
-  "warnings": []
+  "warnings": [],
+  "usage": {
+    "input_tokens": 45210,
+    "cached_input_tokens": 44800,
+    "cache_write_tokens": 128,
+    "output_tokens": 512,
+    "cache_hit_ratio": 0.9909
+  }
 }
 ```
 
-The session ID above is illustrative; continue with the ID returned by your own call. Compatibility fields `session_id`, `name`, `model`, and `answer` are also returned. New integrations should use the nested fields. Raw provider data is excluded unless `--include-raw-response` is supplied; when included, image payloads are replaced by saved paths. All Chat Completions choices and all Responses output items are processed, rather than only the first candidate. Text and images retain their order within a response, and every valid tool call is executed in returned order. Duplicate call IDs are rejected before executing the batch.
+The session ID above is illustrative; continue with the ID returned by your own call. `usage` totals every model call in the turn, including tool rounds: `input_tokens` includes the cached reads and cache writes, and `cache_hit_ratio` is `cached_input_tokens / input_tokens`. It is `null` when the provider reports no usage; providers that report no cache fields show zero cached tokens. Compatibility fields `session_id`, `name`, `model`, and `answer` are also returned. New integrations should use the nested fields. Raw provider data is excluded unless `--include-raw-response` is supplied; when included, image payloads are replaced by saved paths. All Chat Completions choices and all Responses output items are processed, rather than only the first candidate. Text and images retain their order within a response, and every valid tool call is executed in returned order. Duplicate call IDs are rejected before executing the batch.
 
 For completion integrations, an in-memory, per-request capture preserves native output fields before SDK convenience conversion. Gemini candidates are converted independently so a text-only candidate cannot inherit another candidate's tool calls, images, or reasoning. Interleaved Gemini text/image parts retain their order. A complete Chat Completions response with content arrays can be recovered if the SDK rejects its string-only content field; upstream errors and incomplete responses are not recovered this way. Request bodies and credentials are not retained by this capture.
 
 Successful JSON results go to stdout. Runtime failures exit nonzero and write a `conferllm.error.v1` envelope to stderr. Library logging is suppressed in JSON mode so it does not contaminate the envelope. Argument-parser failures use the normal CLI usage error and exit code 2.
 
-Without `--json`, output includes the session ID, name, answer, and output-image locations; warnings go to stderr. Progress also goes to stderr: each model request, the model's readable reasoning (when the provider returns it) and intermediate text, and every tool call with its input and result. Long values are shown as their first and last lines with the omitted count, and long lines are cut at 200 characters; `--log-level DEBUG` shows everything, including replayed history. `--log-level WARNING` hides progress. JSON mode shows no progress. A name is derived locally from the first prompt. Use `--name` to choose one when creating a conversation.
+Without `--json`, output includes the session ID, name, answer, and output-image locations; warnings go to stderr. Progress also goes to stderr: each model request, the model's readable reasoning (when the provider returns it) and intermediate text, each response's input, cached, cache-write, and output token counts, and every tool call with its input and result. Long values are shown as their first and last lines with the omitted count, and long lines are cut at 200 characters; `--log-level DEBUG` shows everything, including replayed history. `--log-level WARNING` hides progress. JSON mode shows no progress. A name is derived locally from the first prompt. Use `--name` to choose one when creating a conversation.
 
 ## Session listing
 
@@ -129,7 +172,7 @@ For chat commands, exactly one of `--model` and `--session` is required. A sessi
 
 ## Built-in tools
 
-All configured models receive the same native function definitions on every request. There is no opt-in flag, model allowlist, approval prompt, sandbox, command classifier, or read-before-write gate. Tools run on the ConferLLM host using its OS user's access, including for chats invoked through MCP. A read-only prompt is guidance to the model, not an enforced boundary.
+All configured models receive the same native function definitions on every request; a continued session replays the definitions pinned when it was created. There is no opt-in flag, model allowlist, approval prompt, sandbox, command classifier, or read-before-write gate. Tools run on the ConferLLM host using its OS user's access, including for chats invoked through MCP. A read-only prompt is guidance to the model, not an enforced boundary.
 
 | Tools | Operations |
 | --- | --- |
@@ -224,7 +267,7 @@ Chat results include the JSON envelope as both structured content and the first 
 
 ## Storage and reliability
 
-Sessions are UTF-8 JSONL files below `~/.conferllm/sessions/YYYY/MM/DD/`. Every committed turn contains a user message, final assistant answer, optional ordered `tool_messages`, and its artifact metadata. Existing v1/v2 sessions remain readable; tool transcripts are an additive field. Replay validates call/result pairing. Turn usage totals include all model calls, while optional raw response data represents the last provider response. Directories use `0700`; session and image files use `0600`. The configuration file remains user-managed.
+Sessions are UTF-8 JSONL files below `~/.conferllm/sessions/YYYY/MM/DD/`. The header pins the system prompt, tool definitions, and the non-secret request profile a session was created with. Every committed turn contains a user message, final assistant answer, optional ordered `tool_messages`, and its artifact metadata. Existing v1/v2 sessions remain readable; tool transcripts and pinned header fields are additive. Replay validates call/result pairing. Turn usage totals include all model calls in their provider format, while optional raw response data represents the last provider response. Directories use `0700`; session and image files use `0600`. The configuration file remains user-managed.
 
 Continuation holds a thread/process lock across loading, model/tool execution, and atomic JSONL replacement. Stored image size/hash checks precede replay. Failed provider calls do not append a partial turn, but commands and file edits that already ran remain in effect. Errors after tool attempts include `tool_calls_attempted`, `side_effects_may_remain`, and the attempted session/turn. A new session ID in a failure is not proof that its JSONL was committed.
 

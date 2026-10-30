@@ -369,6 +369,27 @@ def test_oversized_optional_output_ids_are_not_echoed_as_input_ids() -> None:
     assert response_items(assistant)[2]["id"] == call["id"]
 
 
+def test_gateway_encoded_reasoning_ids_replay_verbatim() -> None:
+    """LiteLLM routes encrypted reasoning back to its origin by the item ID."""
+    reasoning = {
+        "type": "reasoning",
+        # A LiteLLM encrypted-content affinity ID: longer than provider IDs.
+        "id": "encitem_"
+        + base64.b64encode(
+            b"litellm:model_id:deployment-a;item_id:rs_0123456789abcdef"
+        ).decode(),
+        "summary": [],
+        "encrypted_content": "opaque",
+    }
+    assistant = to_model_response(
+        native([reasoning, message("done")]).model_dump()
+    ).model_dump()["choices"][0]["message"]
+
+    replay = messages_to_input([assistant])
+
+    assert replay[0] == reasoning
+
+
 @pytest.mark.parametrize(
     ("role", "content_type"),
     [

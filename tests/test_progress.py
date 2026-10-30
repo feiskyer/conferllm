@@ -490,6 +490,32 @@ def test_reasoning_is_extracted_once_and_rendered(
     assert caplog.records[-1].getMessage() == "Model finished\n  Reasoning: Checked."
 
 
+def test_model_response_summarizes_tokens_and_cache_activity(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    usage = {
+        "input_tokens": 45210,
+        "cached_input_tokens": 44800,
+        "cache_write_tokens": 128,
+        "output_tokens": 512,
+        "cache_hit_ratio": 0.9909,
+    }
+    event("model.response", tool_calls=0, elapsed_seconds=1.5, usage=usage)
+    assert caplog.records[-1].getMessage() == (
+        "Model finished (1.50s); 45,210 input tokens (44,800 cached, "
+        "128 cache writes), 512 output tokens"
+    )
+    assert events(caplog)[-1]["usage"] == usage
+
+    event("model.response", tool_calls=0, usage={**usage, "cached_input_tokens": 0})
+    assert caplog.records[-1].getMessage() == (
+        "Model finished; 45,210 input tokens (128 cache writes), 512 output tokens"
+    )
+    event("model.response", tool_calls=0, usage=None)
+    assert caplog.records[-1].getMessage() == "Model finished"
+
+
 def test_json_text_keeps_its_original_formatting(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

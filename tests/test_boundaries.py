@@ -49,9 +49,7 @@ def test_same_session_concurrent_calls_replay_every_committed_turn(
     release = threading.Event()
     history_lengths: list[int] = []
 
-    def provider(
-        model: str, messages: list[dict], *, system_prompt: str | None
-    ) -> MagicMock:
+    def provider(model: str, messages: list[dict], **_request: object) -> MagicMock:
         history_lengths.append(len(messages))
         if len(history_lengths) == 1:
             entered.set()
