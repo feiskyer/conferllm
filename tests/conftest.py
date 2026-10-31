@@ -37,7 +37,6 @@ def isolate_user_data_and_providers(
     # Spawned test processes must not spend their startup budget fetching
     # LiteLLM's public price map. Use its bundled map, without network access.
     monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
-    monkeypatch.setattr(litellm, "telemetry", False)
 
     def unmocked_provider(*args: Any, **kwargs: Any) -> NoReturn:
         raise AssertionError("Provider calls must be explicitly mocked in tests.")

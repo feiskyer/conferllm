@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-import litellm
 
 from conferllm import cli
 from conferllm.chat import ChatService
@@ -142,7 +141,6 @@ def run(model: str, directory: Path) -> dict[str, Any]:
     LLMClient.chat = observed_chat
     ToolRuntime.execute = no_local_tools
     httpx.Client.send = observed_send
-    litellm.telemetry = False
     logging.disable(logging.CRITICAL)
     previous = signal.signal(signal.SIGALRM, timeout)
     signal.alarm(600)

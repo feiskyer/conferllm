@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-import litellm
 
 from conferllm import __version__, cli
 from conferllm.chat import ChatService
@@ -632,7 +631,6 @@ def run(
 
     # This is a dedicated process, so changing its cwd cannot affect other runs.
     os.chdir(work)
-    litellm.telemetry = False
     logging.disable(logging.CRITICAL)
     LLMClient.chat = observed_chat
     ToolRuntime.execute = observed_execute

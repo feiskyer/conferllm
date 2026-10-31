@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import litellm
+from litellm.types.llms.openai import ResponsesAPIResponse
 from litellm.types.utils import ModelResponse
 
 from . import prompt_cache
@@ -230,10 +231,15 @@ class LLMClient:
 
             if provider == "openai":
                 if model_config.api_format == "responses":
-                    native = litellm.responses(
-                        model=litellm_model,
-                        input=messages_to_input(prepared_messages),
-                        **prepare_responses_params(litellm_params, tool_schemas),
+                    # Synchronous and non-streaming (prepare_responses_params sets
+                    # stream=False), so LiteLLM returns a complete response.
+                    native = cast(
+                        ResponsesAPIResponse,
+                        litellm.responses(
+                            model=litellm_model,
+                            input=messages_to_input(prepared_messages),
+                            **prepare_responses_params(litellm_params, tool_schemas),
+                        ),
                     )
                     return to_model_response(native.model_dump(exclude_none=True))
                 # Honor an explicit legacy selection even when LiteLLM's model
